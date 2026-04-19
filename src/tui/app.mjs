@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { render, Box, Text, Static, useInput, useApp } from 'ink';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { render, Box, Text, Static, useInput, useApp, useStdout } from 'ink';
 import { createRequire } from 'module';
 import { EventEmitter } from 'events';
 
@@ -21,25 +21,39 @@ const {
 
 const h = React.createElement;
 const MAX_THINKING_LINES = 20;
-const SPIN_MS = 100;
+const SPIN_MS = 80;
 
-const SPIN_FRAMES = ['⠂', '⠐', '⠠', '⡀', '⢀', '⠄', '⠁', '⠈'];
+const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-const C = {
-  bg:      undefined,
-  coral:   '#cc785c',
-  text:    '#e8e8e5',
-  sub:     '#a8a8a3',
-  muted:   '#686865',
-  dim:     '#4a4a47',
-  ghost:   '#3a3a38',
-  border:  '#1e1e1c',
-  green:   '#6aac6a',
-  amber:   '#c49a3c',
-  red:     '#c05c5c',
-  purple:  '#9a7ec8',
+const T = {
+  bg:          '#0d0d0d',
+  surface:     '#141414',
+  surfaceHi:   '#1a1a1a',
+  text:        '#e0e0e0',
+  textDim:     '#999999',
+  textMuted:   '#666666',
+  textGhost:   '#444444',
+  textInvis:   '#2a2a2a',
+  accent:      '#d4a054',
+  accentDim:   '#8a6a3a',
+  green:       '#6aab6a',
+  greenDim:    '#3a6a3a',
+  red:         '#cc5555',
+  redDim:      '#6a3333',
+  amber:       '#ccaa44',
+  amberDim:    '#6a5522',
+  purple:      '#aa88cc',
+  purpleDim:   '#5a446a',
+  blue:        '#6699cc',
+  blueDim:     '#334466',
+  cyan:        '#66bbbb',
+  cyanDim:     '#336666',
+  border:      '#222222',
+  borderLight: '#333333',
 };
 
+const SEP = '─';
+const VERT = '│';
 
 class UIStore extends EventEmitter {
   constructor() {
@@ -151,25 +165,41 @@ function useStore(store) {
   }, [store]);
 }
 
+function useDimensions() {
+  const { stdout } = useStdout();
+  const [dims, setDims] = useState({ width: stdout?.columns || 100, height: stdout?.rows || 40 });
+  useEffect(() => {
+    if (!stdout) return;
+    const handler = () => {
+      setDims({ width: stdout.columns || 100, height: stdout.rows || 40 });
+    };
+    stdout.on('resize', handler);
+    return () => stdout.off('resize', handler);
+  }, [stdout]);
+  return dims;
+}
 
-function Banner({ model, resumed }) {
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, paddingTop: 1, paddingBottom: 1 },
-    h(Box, { gap: 1 },
-      h(Text, { color: C.coral, bold: true }, '✦'),
-      h(Text, { color: C.coral, bold: true }, APP_NAME.toLowerCase()),
-      h(Text, { color: C.ghost }, model),
-    ),
-    h(Box, { gap: 1 },
-      h(Text, { color: C.ghost }, resumed ? 'sesión resumida' : 'nueva sesión'),
-      h(Text, { color: C.border }, '·'),
-      h(Text, { color: C.ghost }, '/help'),
-    ),
+
+function Divider({ width }) {
+  const w = width || 60;
+  return h(Box, { paddingLeft: 2 },
+    h(Text, { color: T.textInvis }, SEP.repeat(w)),
   );
 }
 
-function Divider() {
-  return h(Box, { paddingLeft: 2, marginTop: 1 },
-    h(Text, { color: C.border }, '─'.repeat(48)),
+function Banner({ model, resumed, width }) {
+  const w = width || 60;
+  return h(Box, { flexDirection: 'column', paddingLeft: 2, paddingTop: 1, paddingBottom: 1 },
+    h(Box, {},
+      h(Text, { color: T.accent, bold: true }, ' ▌ '),
+      h(Text, { color: T.text, bold: true }, APP_NAME),
+      h(Text, { color: T.textMuted }, '  '),
+      h(Text, { color: T.textMuted }, model),
+    ),
+    h(Box, {},
+      h(Text, { color: T.textGhost }, '  ' + (resumed ? 'session resumed' : 'new session')),
+      h(Text, { color: T.textInvis }, '   ' + SEP.repeat(Math.max(10, w - 30))),
+    ),
   );
 }
 
@@ -188,38 +218,38 @@ function SpinnerLine({ label, started }) {
   const elapsedStr = elapsed > 1500 ? formatElapsed(elapsed) : '';
 
   return h(Box, { paddingLeft: 2, gap: 2 },
-    h(Text, { color: C.coral }, SPIN_FRAMES[frame]),
-    h(Text, { color: C.muted }, label),
-    elapsedStr ? h(Text, { color: C.ghost }, elapsedStr) : null,
+    h(Text, { color: T.accent }, SPIN_FRAMES[frame]),
+    h(Text, { color: T.textMuted }, label),
+    elapsedStr ? h(Text, { color: T.textGhost }, ' ' + elapsedStr) : null,
   );
 }
 
 function EventLine({ kind, title, detail }) {
   const cfg = {
-    info:  { sym: '·',  color: C.ghost },
-    think: { sym: '○',  color: C.ghost },
-    tool:  { sym: '⚡', color: C.purple },
-    ok:    { sym: '✓',  color: C.green },
-    warn:  { sym: '!',  color: C.amber },
-    error: { sym: '✕',  color: C.red },
+    info:    { sym: '·',  color: T.textGhost },
+    think:   { sym: '◐',  color: T.textGhost },
+    tool:    { sym: '⤳',  color: T.purple },
+    ok:      { sym: '✓',  color: T.green },
+    warn:    { sym: '▲',  color: T.amber },
+    error:   { sym: '✕',  color: T.red },
   };
   const { sym, color } = cfg[kind] || cfg.info;
 
   return h(Box, { paddingLeft: 2, gap: 2 },
     h(Text, { color }, sym),
-    h(Text, { color: C.muted }, title),
-    detail ? h(Text, { color: C.ghost }, detail) : null,
+    h(Text, { color: kind === 'tool' ? T.textDim : T.textMuted }, title),
+    detail ? h(Text, { color: T.textGhost }, ' ' + detail) : null,
   );
 }
 
-function UserMessage({ text }) {
+function UserMessage({ text, width }) {
   return h(Box, { paddingLeft: 2, marginTop: 1, gap: 1 },
-    h(Text, { color: C.coral, bold: true }, '›'),
-    h(Text, { color: C.text, wrap: 'wrap' }, text),
+    h(Text, { color: T.accent, bold: true }, '  ▌'),
+    h(Text, { color: T.text, wrap: 'wrap' }, text),
   );
 }
 
-function ThinkingBlock({ text, elapsed, live }) {
+function ThinkingBlock({ text, elapsed, live, width }) {
   const lines = text.split('\n').filter(l => l.trim()).slice(0, MAX_THINKING_LINES);
   const total  = text.split('\n').filter(l => l.trim()).length;
   const more   = total - MAX_THINKING_LINES;
@@ -231,32 +261,43 @@ function ThinkingBlock({ text, elapsed, live }) {
     return () => clearInterval(t);
   }, [live]);
 
-  const label = live ? 'pensando…' : `pensó  ${elapsed}s`;
+  const pulseChar = live ? SPIN_FRAMES[Math.floor(Date.now() / SPIN_MS) % SPIN_FRAMES.length] : '◐';
+
+  const label = live
+    ? ` ${pulseChar}  thinking...`
+    : ` ◐  thought ${elapsed}s`;
 
   return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
-    h(Text, { color: C.ghost }, `○  ${label}`),
+    h(Text, { color: T.textGhost }, label),
     lines.length > 0
-      ? h(Box, { flexDirection: 'column', paddingLeft: 3 },
+      ? h(Box, { flexDirection: 'column', paddingLeft: 3, borderStyle: 'none' },
           ...lines.map((line, i) =>
-            h(Text, { key: String(i), color: C.dim, wrap: 'wrap' }, line),
+            h(Text, { key: String(i), color: T.textInvis, wrap: 'wrap' }, line),
           ),
-          more > 0 ? h(Text, { color: C.ghost }, `· · ·  ${more} más`) : null,
+          more > 0 ? h(Text, { color: T.textGhost }, `   · · ·  ${more} more lines`) : null,
         )
       : null,
   );
 }
 
-function AnswerBlock({ text, live }) {
+function AnswerBlock({ text, live, width }) {
   if (!text) return null;
+  const lines = text.split('\n');
   return h(Box, { flexDirection: 'column', paddingLeft: 3, marginTop: 1 },
-    h(Text, { color: C.text, wrap: 'wrap' }, text),
-    live ? h(Text, { color: C.coral }, '▎') : null,
+    ...lines.map((line, i) =>
+      h(Text, { key: String(i), color: T.text, wrap: 'wrap' }, line),
+    ),
+    live
+      ? h(Text, { color: T.accent }, '▎')
+      : null,
   );
 }
 
 function SystemMsg({ text }) {
-  return h(Box, { paddingLeft: 2 },
-    h(Text, { color: C.muted, wrap: 'wrap' }, text),
+  return h(Box, { flexDirection: 'column', paddingLeft: 2 },
+    ...text.split('\n').map((line, i) =>
+      h(Text, { key: String(i), color: T.textMuted, wrap: 'wrap' }, line),
+    ),
   );
 }
 
@@ -264,34 +305,78 @@ function ConfirmBar({ title, detail }) {
   const detailLines = (detail || '').split('\n').filter(l => l.trim()).slice(0, 8);
 
   return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
-    h(Box, { gap: 1 },
-      h(Text, { color: C.amber }, '!'),
-      h(Text, { color: C.text, bold: true }, title),
+    h(Box, { gap: 2 },
+      h(Text, { color: T.amber, bold: true }, '  ?'),
+      h(Text, { color: T.text, bold: true }, title),
     ),
     detailLines.length > 0
-      ? h(Box, { flexDirection: 'column', paddingLeft: 2 },
+      ? h(Box, { flexDirection: 'column', paddingLeft: 4 },
           ...detailLines.map((line, i) =>
-            h(Text, { key: String(i), color: C.sub, wrap: 'wrap' }, line),
+            h(Text, { key: String(i), color: T.textDim, wrap: 'wrap' }, line),
           ),
         )
       : null,
-    h(Box, { marginTop: 1, gap: 2 },
-      h(Text, { color: C.green, bold: true }, 's'),
-      h(Text, { color: C.ghost }, 'aceptar'),
-      h(Text, { color: C.ghost }, '·'),
-      h(Text, { color: C.red, bold: true }, 'n'),
-      h(Text, { color: C.ghost }, 'rechazar'),
+    h(Box, { marginTop: 1, paddingLeft: 2, gap: 3 },
+      h(Text, { color: T.green, bold: true }, ' y'),
+      h(Text, { color: T.textGhost }, 'allow'),
+      h(Text, { color: T.textInvis }, '·'),
+      h(Text, { color: T.red, bold: true }, ' n'),
+      h(Text, { color: T.textGhost }, 'deny'),
     ),
   );
 }
 
-function StaticItem({ item }) {
+function StatusIndicator({ processing }) {
+  if (!processing) return null;
+
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setFrame(f => (f + 1) % SPIN_FRAMES.length), SPIN_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  return h(Box, {},
+    h(Text, { color: T.accent }, SPIN_FRAMES[frame]),
+  );
+}
+
+function StatusBar({ model, processing, width }) {
+  const items = [
+    h(Text, { key: 'name', color: T.accent, bold: true }, ` ${APP_NAME}`),
+    h(Text, { key: 'sep1', color: T.textInvis }, ' ─ '),
+    h(Text, { key: 'model', color: T.textMuted }, model),
+  ];
+
+  if (processing) {
+    items.push(h(StatusIndicator, { key: 'status', processing }));
+  }
+
+  const spacerCount = Math.max(2, Math.floor((width - 40) / 2));
+
+  const rightItems = [
+    h(Text, { key: 'rsep', color: T.textInvis }, ' '.repeat(spacerCount)),
+    h(Text, { key: 'esc', color: T.textGhost }, 'esc'),
+    h(Text, { key: 'rsep2', color: T.textInvis }, ' to exit'),
+  ];
+
+  return h(Box, {
+    paddingLeft: 1,
+    paddingRight: 1,
+    borderStyle: 'single',
+    borderColor: T.borderLight,
+  },
+    ...items,
+    ...rightItems,
+  );
+}
+
+function StaticItem({ item, width }) {
   switch (item.type) {
-    case 'banner':   return h(Banner,        { model: item.model, resumed: item.resumed });
-    case 'divider':  return h(Divider,       {});
-    case 'user':     return h(UserMessage,   { text: item.text });
-    case 'thinking': return h(ThinkingBlock, { text: item.text, elapsed: item.elapsed });
-    case 'answer':   return h(AnswerBlock,   { text: item.text });
+    case 'banner':   return h(Banner,        { model: item.model, resumed: item.resumed, width });
+    case 'divider':  return h(Divider,       { width });
+    case 'user':     return h(UserMessage,   { text: item.text, width });
+    case 'thinking': return h(ThinkingBlock, { text: item.text, elapsed: item.elapsed, width });
+    case 'answer':   return h(AnswerBlock,   { text: item.text, width });
     case 'event':    return h(EventLine,     { kind: item.kind, title: item.title, detail: item.detail });
     case 'system':   return h(SystemMsg,     { text: item.text });
     default:         return null;
@@ -319,18 +404,13 @@ function InputBar({ onSubmit, model }) {
     }
   });
 
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1, paddingBottom: 1 },
-    h(Box, { gap: 1 },
-      h(Text, { color: C.coral, bold: true }, '›'),
-      h(Text, { color: C.text }, value || ''),
-      h(Text, { color: C.coral }, '▎'),
-    ),
-    h(Box, { gap: 1 },
-      h(Text, { color: C.ghost }, model),
-      h(Text, { color: C.border }, '·'),
-      h(Text, { color: C.ghost }, '/help'),
-      h(Text, { color: C.border }, '·'),
-      h(Text, { color: C.ghost }, 'esc'),
+  const hasText = value.trim().length > 0;
+
+  return h(Box, { flexDirection: 'column', paddingLeft: 1, paddingRight: 1 },
+    h(Box, {},
+      h(Text, { color: T.accent, bold: true }, ' > '),
+      h(Text, { color: hasText ? T.text : T.textGhost }, value),
+      h(Text, { color: T.accent }, hasText ? '' : '▎'),
     ),
   );
 }
@@ -339,6 +419,7 @@ function InputBar({ onSubmit, model }) {
 function App({ store, state, onSubmit }) {
   useStore(store);
   const { exit } = useApp();
+  const { width, height } = useDimensions();
 
   const modelKey   = state?.activeModel || DEFAULT_MODEL_KEY;
   const modelLabel = (MODELS[modelKey]?.label || modelKey).toLowerCase();
@@ -352,39 +433,55 @@ function App({ store, state, onSubmit }) {
     if (key.ctrl && input === 'c') { exit(); return; }
     if (key.escape && !store.processing && !store.confirmRequest) { exit(); return; }
     if (!store.confirmRequest) return;
-    if (input === 's' || input === 'y') store.resolveConfirm('s');
+    if (input === 'y' || input === 's') store.resolveConfirm('s');
     else if (input === 'n' || key.return) store.resolveConfirm('n');
   });
 
   const showInput   = !store.processing && !store.confirmRequest;
   const showConfirm = !!store.confirmRequest;
 
-  return h(Box, { flexDirection: 'column' },
-    h(Static, { items: store.items }, (item) =>
-      h(Box, { key: item.id, flexDirection: 'column' },
-        h(StaticItem, { item }),
+  const dynamicArea = [];
+
+  if (store.spinner && !store.liveThinking) {
+    dynamicArea.push(
+      h(SpinnerLine, { key: 'spinner', label: store.spinner.label, started: store.spinner.started })
+    );
+  }
+
+  if (store.liveThinking) {
+    dynamicArea.push(
+      h(ThinkingBlock, { key: 'thinking', text: store.liveThinking.text, live: true, width })
+    );
+  }
+
+  if (store.liveAnswer) {
+    dynamicArea.push(
+      h(AnswerBlock, { key: 'answer', text: store.liveAnswer.text, live: true, width })
+    );
+  }
+
+  if (showConfirm) {
+    dynamicArea.push(
+      h(ConfirmBar, { key: 'confirm', title: store.confirmRequest.title, detail: store.confirmRequest.detail })
+    );
+  }
+
+  if (showInput) {
+    dynamicArea.push(
+      h(InputBar, { key: 'input', onSubmit: handleInput, model: modelLabel })
+    );
+  }
+
+  return h(Box, { flexDirection: 'column', width: '100%', height: '100%' },
+    h(Box, { flexDirection: 'column', flexGrow: 1, overflowY: 'hidden' },
+      h(Static, { items: store.items }, (item) =>
+        h(Box, { key: item.id, flexDirection: 'column' },
+          h(StaticItem, { item, width }),
+        ),
       ),
+      ...dynamicArea,
     ),
-
-    store.spinner && !store.liveThinking
-      ? h(SpinnerLine, { label: store.spinner.label, started: store.spinner.started })
-      : null,
-
-    store.liveThinking
-      ? h(ThinkingBlock, { text: store.liveThinking.text, live: true })
-      : null,
-
-    store.liveAnswer
-      ? h(AnswerBlock, { text: store.liveAnswer.text, live: true })
-      : null,
-
-    showConfirm
-      ? h(ConfirmBar, { title: store.confirmRequest.title, detail: store.confirmRequest.detail })
-      : null,
-
-    showInput
-      ? h(InputBar, { onSubmit: handleInput, model: modelLabel })
-      : null,
+    h(StatusBar, { model: modelLabel, processing: store.processing, width }),
   );
 }
 
@@ -487,6 +584,8 @@ export async function startTUI(options = {}) {
     store._emit();
   };
 
-  const app = render(h(App, { store, state, onSubmit: handleSubmit }));
+  const app = render(h(App, { store, state, onSubmit: handleSubmit }), {
+    exitOnCtrlC: false,
+  });
   await app.waitUntilExit();
 }
