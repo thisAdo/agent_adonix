@@ -89,6 +89,29 @@ function extractToolJson(text) {
   );
 }
 
+function extractXmlTool(text) {
+  const invokeMatch = text.match(
+    /<invoke\s+name="([\w-]+)"\s*>\s*<args>\s*([\s\S]*?)\s*<\/args>\s*<\/invoke>/i,
+  );
+  if (!invokeMatch) return null;
+
+  const tool = invokeMatch[1];
+  if (!KNOWN_TOOLS.has(tool)) return null;
+
+  const rawArgs = invokeMatch[2].trim();
+  if (!rawArgs) return { type: 'tool', tool, args: {} };
+
+  try {
+    const args = JSON.parse(rawArgs);
+    return { type: 'tool', tool, args: args && typeof args === 'object' ? args : {} };
+  } catch {}
+
+  const fuzzy = fuzzyExtractTool(`{"tool":"${tool}","args":${rawArgs}}`);
+  if (fuzzy) return fuzzy;
+
+  return { type: 'tool', tool, args: {} };
+}
+
 function classifyParsed(parsed) {
   if (parsed?.type === 'tool' && parsed.tool) {
     return { type: 'tool', tool: parsed.tool, args: parsed.args ?? {} };
@@ -225,6 +248,9 @@ function parseAgentResponse(raw) {
   const tool = extractToolJson(text);
   if (tool) return { type: 'tool', tool: tool.tool, args: tool.args ?? {} };
 
+  const xmlTool = extractXmlTool(text);
+  if (xmlTool) return xmlTool;
+
   const extracted = classifyParsed(extractJson(text));
   if (extracted) return extracted;
 
@@ -242,6 +268,10 @@ function isInternalHistoryMessage(message) {
   }
 
   if (message?.role === 'assistant' && /^{"type":"tool"/.test(content)) {
+    return true;
+  }
+
+  if (message?.role === 'assistant' && /<invoke\s+name=|<\w+:tool_call>/i.test(content)) {
     return true;
   }
 

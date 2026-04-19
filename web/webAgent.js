@@ -10,8 +10,9 @@ const CONCUERDO_TIMEOUT = 30000;
 const BUFFER_CHECK = 12;
 const WEB_SKILLS = ['core', 'web-agent', 'code-style', 'reasoning', 'methodology'];
 const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i;
-const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso)\b/i;
-const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta)/i;
+const XML_TOOL_RE = /<invoke\s+name=|<\w+:tool_call>/i;
+const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso|entendido|dejame|déjame)\b/i;
+const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta|ver el archivo|continuar|resolver)/i;
 
 function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   const skills = buildSkillsPrompt({ include: WEB_SKILLS });
@@ -52,6 +53,7 @@ function looksLikeToolPayload(text) {
   if (!sample) return false;
 
   return /^\{/.test(sample)
+    || XML_TOOL_RE.test(sample)
     || /^```(?:json)?/i.test(sample)
     || /"type"\s*:\s*"tool"/i.test(sample)
     || TOOL_HINT_RE.test(sample);
