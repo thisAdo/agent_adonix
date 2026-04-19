@@ -108,6 +108,7 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
     username: user.username,
     hasGithub: !!user.githubToken,
     githubEmail: user.githubEmail || '',
+    githubUsername: user.githubUsername || '',
   });
 });
 
@@ -116,14 +117,23 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 app.put('/api/settings', requireAuth, async (req, res) => {
   try {
     const { githubToken, githubEmail } = req.body;
+    const updates = {};
+
     if (githubToken) {
-      const valid = await githubApi.validateToken(githubToken);
-      if (!valid) {
+      const profile = await githubApi.validateToken(githubToken);
+      if (!profile) {
         return res.status(400).json({ error: 'Token de GitHub inválido o expirado' });
       }
+      updates.githubToken = githubToken;
+      updates.githubUsername = profile.login || '';
+      updates.githubName = profile.name || profile.login || '';
+      updates.githubEmail = githubEmail || profile.email || '';
+    } else if (githubEmail !== undefined) {
+      updates.githubEmail = githubEmail;
     }
-    store.updateUser(req.session.userId, { githubToken, githubEmail });
-    res.json({ success: true });
+
+    store.updateUser(req.session.userId, updates);
+    res.json({ success: true, githubUsername: updates.githubUsername || '' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

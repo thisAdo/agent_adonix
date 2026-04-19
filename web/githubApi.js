@@ -25,12 +25,20 @@ async function ghFetch(urlPath, token, options = {}) {
   return res.json();
 }
 
+async function getViewer(token) {
+  const user = await ghFetch('/user', token);
+  return {
+    login: user.login || '',
+    name: user.name || user.login || '',
+    email: user.email || '',
+  };
+}
+
 async function validateToken(token) {
   try {
-    await ghFetch('/user', token);
-    return true;
+    return await getViewer(token);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -68,7 +76,7 @@ async function readFile(token, owner, repo, filePath) {
   };
 }
 
-async function writeFile(token, owner, repo, filePath, content, email) {
+async function writeFile(token, owner, repo, filePath, content, author = {}) {
   let sha;
   try {
     const existing = await ghFetch(
@@ -83,8 +91,8 @@ async function writeFile(token, owner, repo, filePath, content, email) {
     message: `Update ${filename}`,
     content: Buffer.from(content).toString('base64'),
     committer: {
-      name: 'Adonix',
-      email: email || 'adonix@bot.local',
+      name: author.name || 'Adonix',
+      email: author.email || 'adonix@bot.local',
     },
   };
   if (sha) body.sha = sha;
@@ -96,4 +104,11 @@ async function writeFile(token, owner, repo, filePath, content, email) {
   });
 }
 
-module.exports = { listRepos, getTree, readFile, writeFile, validateToken };
+module.exports = {
+  listRepos,
+  getTree,
+  readFile,
+  writeFile,
+  validateToken,
+  getViewer,
+};

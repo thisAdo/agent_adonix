@@ -9,6 +9,7 @@ const MAX_STEPS = 15;
 const CONCUERDO_TIMEOUT = 30000;
 const BUFFER_CHECK = 12;
 const WEB_SKILLS = ['core', 'web-agent', 'code-style', 'reasoning', 'methodology'];
+const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i;
 
 function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   const skills = buildSkillsPrompt({ include: WEB_SKILLS });
@@ -44,6 +45,16 @@ function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   return parts.join('\n');
 }
 
+function looksLikeToolPayload(text) {
+  const sample = text.trimStart().slice(0, 240);
+  if (!sample) return false;
+
+  return /^\{/.test(sample)
+    || /^```(?:json)?/i.test(sample)
+    || /"type"\s*:\s*"tool"/i.test(sample)
+    || TOOL_HINT_RE.test(sample);
+}
+
 async function executeTool(tool, args, ctx) {
   ctx.onEvent({ type: 'tool', name: tool, path: args.path || args.query || '' });
 
@@ -60,7 +71,10 @@ async function executeTool(tool, args, ctx) {
           ctx.onEvent({ type: 'tool_error', content: msg });
           return msg;
         }
-        await githubApi.writeFile(ctx.token, ctx.owner, ctx.repo, args.path, args.content, ctx.email);
+        await githubApi.writeFile(ctx.token, ctx.owner, ctx.repo, args.path, args.content, {
+          name: ctx.authorName,
+          email: ctx.email,
+        });
         const fname = args.path.split('/').pop();
         ctx.onEvent({ type: 'tool_done', content: `Commit: Update ${fname}` });
         return `Archivo ${args.path} actualizado y commiteado.`;
@@ -210,6 +224,7 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     owner: repoOwner,
     repo: repoName,
     email: user.githubEmail,
+    authorName: user.githubUsername || user.githubName || user.username || 'Adonix',
     fileTree,
     onEvent,
   };
@@ -244,18 +259,15 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
           answer += delta;
 
-          // Buffer initial chars to detect tool calls vs text
           if (!streamStarted && !isToolBuf) {
-            const trimmed = answer.trimStart();
-            if (trimmed.length < BUFFER_CHECK) return;
-
-            if (trimmed[0] === '{' || trimmed.startsWith('```')) {
-              // JSON tool call — buffer silently
+            if (looksLikeToolPayload(answer)) {
               isToolBuf = true;
               return;
             }
 
-            // Text response — flush buffer and start streaming
+            const trimmed = answer.trimStart();
+            if (trimmed.length < BUFFER_CHECK) return;
+
             streamStarted = true;
             onEvent({ type: 'delta', content: answer });
             return;
@@ -278,6 +290,21 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     }
 
     const parsed = parseAgentResponse(answer);
+
+    if (parsed.type === 'final' && looksLikeToolPayload(parsed.content || answer)) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      modelMessages.push({ role: 'assistant', content: answer });
+      modelMessages.push({
+        role: 'user',
+        content: [
+          'Tu ultima salida parecia un tool call JSON malformado o incompleto.',
+          'No muestres JSON al usuario.',
+          'Si necesitas una herramienta, responde SOLO con JSON valido.',
+          'Si ya terminaste, responde SOLO con texto final limpio.',
+        ].join(' '),
+      });
+      continue;
+    }
 
     // ── Final response ──
     if (parsed.type === 'final') {

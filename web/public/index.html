@@ -297,6 +297,16 @@
       return '<p>' + h + '</p>';
     }
 
+    function looksLikeToolPayload(text) {
+      const sample = String(text || '').trimStart().slice(0, 240);
+      if (!sample) return false;
+
+      return /^\{/.test(sample)
+        || /^```(?:json)?/i.test(sample)
+        || /"type"\s*:\s*"tool"/i.test(sample)
+        || /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i.test(sample);
+    }
+
     // Auth
     function toggleAuthMode() {
       authMode = authMode === 'login' ? 'register' : 'login';
@@ -699,6 +709,10 @@
               }
 
               case 'tool': {
+                if (looksLikeToolPayload(streamContent)) {
+                  streamContent = '';
+                  cEl.innerHTML = '';
+                }
                 const tid = `t-${sid}-${Date.now()}`;
                 addEv(`<span id="${tid}" class="flex items-center gap-1.5 text-neutral-500"><span class="text-amber-500">⚡</span> ${esc(ev.name)}${ev.path ? ': ' + esc(ev.path) : ''} <span id="${tid}-s" class="spinner text-neutral-400">◌</span></span>`);
                 break;
@@ -728,6 +742,11 @@
 
               case 'delta':
                 streamContent += ev.content;
+                if (looksLikeToolPayload(streamContent)) {
+                  cEl.innerHTML = '';
+                  cEl.classList.add('cursor-blink');
+                  break;
+                }
                 cEl.innerHTML = md(streamContent);
                 cEl.classList.remove('cursor-blink');
                 area.scrollTop = area.scrollHeight;
@@ -759,7 +778,14 @@
                 break;
 
               case 'done':
-                cEl.innerHTML = md(isSynth ? synthContent || ev.content : ev.content || streamContent);
+                {
+                  const finalContent = isSynth ? synthContent || ev.content : ev.content || streamContent;
+                  if (!looksLikeToolPayload(finalContent)) {
+                    cEl.innerHTML = md(finalContent);
+                  } else {
+                    cEl.innerHTML = '';
+                  }
+                }
                 cEl.classList.remove('cursor-blink');
                 area.scrollTop = area.scrollHeight;
                 break;

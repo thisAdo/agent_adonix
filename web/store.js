@@ -27,6 +27,8 @@ function createUser(data) {
     ...data,
     githubToken: '',
     githubEmail: '',
+    githubUsername: '',
+    githubName: '',
     createdAt: Date.now(),
   });
   writeUsers(users);
