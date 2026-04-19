@@ -559,8 +559,13 @@ function InputBar({ onSubmit, processing }) {
 
   useInput((input, key) => {
     if (key.return) {
-      const text = value.trim();
+      let text = value.trim();
       if (!text) return;
+      // Si hay sugerencias visibles, autocompletar antes de enviar
+      if (showSuggestions && suggestions.length > 0 && text === '/') {
+        const cmd = suggestions[suggestIdx] || suggestions[0];
+        if (cmd) text = `/${cmd.name}`;
+      }
       historyRef.current.unshift(text);
       if (historyRef.current.length > 100) historyRef.current.pop();
       setValue('');
@@ -728,7 +733,9 @@ function App({ store, state, onSubmit }) {
   const { width } = useDimensions();
 
   const modelKey   = state?.activeModel || DEFAULT_MODEL_KEY;
-  const modelLabel = (MODELS[modelKey]?.label || modelKey).toLowerCase();
+  const modelLabel = state?.concuerdo
+    ? 'concuerdo · ' + Object.values(MODELS).map(m => m.label).join(', ')
+    : (MODELS[modelKey]?.label || modelKey).toLowerCase();
 
   const handleInput = useCallback((text) => {
     if (text === '/exit' || text === '/quit') {
