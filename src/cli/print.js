@@ -16,9 +16,11 @@ const C = {
   light: '\x1b[37m',
   gray: '\x1b[90m',
   darkGray: '\x1b[38;5;240m',
-  faintGreen: '\x1b[38;5;250m',
-  faintRed: '\x1b[38;5;245m',
 };
+
+const INDENT = '    ';
+const INDENT_LEN = 4;
+const MAX_THINKING_LINES = 8;
 
 function hasTTY() {
   return Boolean(process.stdout.isTTY || process.stderr.isTTY);
@@ -29,8 +31,69 @@ function c(text, ...styles) {
   return styles.join('') + text + C.reset;
 }
 
+function contentWidth() {
+  const cols = process.stdout.columns || 80;
+  return Math.max(20, cols - 6);
+}
+
 function termWidth() {
-  return Math.max(60, Math.min(process.stdout.columns ?? 80, 100));
+  return contentWidth();
+}
+
+function wrapLines(text, maxWidth, indent = '') {
+  const lines = [];
+  const indentLen = indent.length;
+
+  for (const rawLine of text.split('\n')) {
+    if (!rawLine.length) {
+      lines.push('');
+      continue;
+    }
+
+    const words = rawLine.split(/(\s+)/);
+    let line = '';
+    let lineLen = indentLen;
+
+    for (const word of words) {
+      if (/^\s+$/.test(word)) {
+        if (lineLen + word.length <= maxWidth) {
+          line += word;
+          lineLen += word.length;
+        }
+        continue;
+      }
+
+      if (lineLen + word.length > maxWidth && lineLen > indentLen) {
+        lines.push(indent + line);
+        line = '';
+        lineLen = indentLen;
+      }
+
+      if (word.length > maxWidth - indentLen) {
+        let remaining = word;
+        while (remaining.length > 0) {
+          const space = maxWidth - lineLen;
+          const chunk = remaining.slice(0, space);
+          line += chunk;
+          lineLen += chunk.length;
+          remaining = remaining.slice(space);
+          if (remaining.length > 0) {
+            lines.push(indent + line);
+            line = '';
+            lineLen = indentLen;
+          }
+        }
+        continue;
+      }
+
+      line += word;
+      lineLen += word.length;
+    }
+
+    lines.push(indent + line);
+  }
+
+  return lines;
 }
 
 function pushAction(state, kind, title, detail = '') {
@@ -50,15 +113,15 @@ const EVENT_SYMBOLS = {
 
 function logEvent(state, kind, title, detail = '') {
   pushAction(state, kind, title, detail);
-
   const ev = EVENT_SYMBOLS[kind] ?? EVENT_SYMBOLS.info;
   const sym = c(ev.sym, ev.color);
-  const suffix = detail ? `  ${c(detail, C.gray)}` : '';
+  const maxDetail = Math.max(10, contentWidth() - title.length - 6);
+  const suffix = detail ? `  ${c(shortText(detail, maxDetail), C.gray)}` : '';
   console.error(`  ${sym} ${c(title, C.light)}${suffix}`);
 }
 
 function printDivider() {
-  const w = Math.min(termWidth() - 4, 44);
+  const w = Math.min(contentWidth(), 50);
   console.log(`  ${c('─'.repeat(w), C.darkGray)}`);
 }
 
@@ -68,7 +131,7 @@ function printBanner(state) {
 
   console.log('');
   console.log(`  ${c('◆', C.white)} ${c(APP_NAME, C.bold, C.white)}  ${c('·', C.darkGray)}  ${c(model, C.gray)}`);
-  console.log(`    ${c('/help para comandos', C.darkGray)}`);
+  console.log(`  ${c('/help para comandos', C.darkGray)}`);
   console.log('');
 }
 
@@ -86,11 +149,15 @@ async function printWelcome() {
 }
 
 function printAssistantMessage(content) {
+  const width = contentWidth();
+  const wrapped = wrapLines(content, width - INDENT_LEN);
+
   console.log('');
-  const lines = content.split('\n');
-  console.log(`  ${c('◆', C.white)} ${c(lines[0], C.white)}`);
-  for (let i = 1; i < lines.length; i++) {
-    console.log(`    ${c(lines[i], C.white)}`);
+  if (wrapped.length > 0) {
+    console.log(`  ${c('◆', C.white)} ${c(wrapped[0].trimStart(), C.white)}`);
+    for (let i = 1; i < wrapped.length; i++) {
+      console.log(`${INDENT}${c(wrapped[i], C.white)}`);
+    }
   }
   console.log('');
 }
@@ -119,7 +186,7 @@ function startThinkingIndicator(state, label) {
     if (!active) return;
     active = false;
     clearInterval(timer);
-    process.stderr.write('\r\x1b[K');
+    process.stderr.write('\r\x1b[2K');
   };
 }
 
@@ -131,36 +198,95 @@ function beginThinkingStream(state) {
     return;
   }
 
-  process.stderr.write(`  ${c('○', C.gray)} ${c('pensando', C.dim, C.italic)}  `);
-  state.thinkingStream = { active: true, plain: false, chars: 0 };
+  const frozenWidth = contentWidth();
+  process.stderr.write(`  ${c('○', C.gray)} ${c('pensando...', C.dim, C.italic)}\n`);
+  state.thinkingStream = {
+    active: true,
+    plain: false,
+    col: 0,
+    linesDown: 1,
+    visibleLines: 0,
+    started: Date.now(),
+    maxWidth: frozenWidth,
+  };
 }
 
 function writeThinkingDelta(state, delta) {
-  if (!delta || !state.thinkingStream?.active) return;
+  if (!delta || !state.thinkingStream?.active || state.thinkingStream.plain) return;
 
-  if (state.thinkingStream.plain) return;
+  const maxLines = MAX_THINKING_LINES;
+  if (state.thinkingStream.visibleLines >= maxLines) return;
 
-  const maxVisible = 60;
-  const current = state.thinkingStream.chars || 0;
+  const maxCol = state.thinkingStream.maxWidth;
+  const prefixRaw = `  ${c('│', C.darkGray)} `;
+  const prefixLen = 4;
+  let { col, linesDown, visibleLines } = state.thinkingStream;
+  let buf = '';
 
-  if (current >= maxVisible) {
-    const trimmed = delta.replace(/\n/g, ' ').slice(0, 20);
-    process.stderr.write(`\r  ${c('○', C.gray)} ${c('pensando', C.dim, C.italic)}  ${c(trimmed.padEnd(20), C.dim, C.gray)}`);
-    return;
+  for (const ch of delta) {
+    if (visibleLines >= maxLines) {
+      if (buf) {
+        process.stderr.write(c(buf, C.dim, C.gray));
+        buf = '';
+      }
+      process.stderr.write(c('...', C.darkGray));
+      break;
+    }
+
+    if (ch === '\n') {
+      if (buf) { process.stderr.write(c(buf, C.dim, C.gray)); buf = ''; }
+      process.stderr.write('\n');
+      linesDown++;
+      visibleLines++;
+      col = 0;
+      continue;
+    }
+
+    if (col === 0) {
+      if (buf) { process.stderr.write(c(buf, C.dim, C.gray)); buf = ''; }
+      process.stderr.write(prefixRaw);
+      col = prefixLen;
+    }
+
+    if (col >= maxCol) {
+      if (buf) { process.stderr.write(c(buf, C.dim, C.gray)); buf = ''; }
+      process.stderr.write('\n');
+      linesDown++;
+      visibleLines++;
+      if (visibleLines >= maxLines) {
+        process.stderr.write(`  ${c('│', C.darkGray)} ${c('...', C.darkGray)}`);
+        break;
+      }
+      process.stderr.write(prefixRaw);
+      col = prefixLen;
+      if (ch === ' ') continue;
+    }
+
+    buf += ch;
+    col++;
   }
 
-  const clean = delta.replace(/\n/g, ' ');
-  const remaining = maxVisible - current;
-  const show = clean.slice(0, remaining);
-  process.stderr.write(c(show, C.dim, C.gray));
-  state.thinkingStream.chars = current + show.length;
+  if (buf) process.stderr.write(c(buf, C.dim, C.gray));
+  Object.assign(state.thinkingStream, { col, linesDown, visibleLines });
 }
 
 function endThinkingStream(state) {
   if (!state.thinkingStream?.active) return;
+
   if (!state.thinkingStream.plain) {
-    process.stderr.write('\r\x1b[K');
+    if (state.thinkingStream.col > 0) {
+      process.stderr.write('\n');
+      state.thinkingStream.linesDown++;
+    }
+
+    for (let i = 0; i < state.thinkingStream.linesDown; i++) {
+      process.stderr.write('\x1b[A\r\x1b[2K');
+    }
+
+    const elapsed = ((Date.now() - state.thinkingStream.started) / 1000).toFixed(1);
+    process.stderr.write(`  ${c('○', C.gray)} ${c(`pensó ${elapsed}s`, C.dim, C.gray)}\n`);
   }
+
   state.thinkingStream = null;
 }
 
@@ -172,9 +298,16 @@ function beginAssistantStream(state) {
     return;
   }
 
+  const frozenWidth = contentWidth();
   console.log('');
   process.stdout.write(`  ${c('◆', C.white)} `);
-  state.liveResponse = { active: true, streamed: false, plain: false };
+  state.liveResponse = {
+    active: true,
+    streamed: false,
+    plain: false,
+    col: INDENT_LEN,
+    maxWidth: frozenWidth,
+  };
 }
 
 function writeAssistantDelta(state, delta) {
@@ -187,8 +320,47 @@ function writeAssistantDelta(state, delta) {
     return;
   }
 
-  const indented = delta.replace(/\n/g, '\n    ');
-  process.stdout.write(c(indented, C.white));
+  const maxCol = state.liveResponse.maxWidth;
+  let { col } = state.liveResponse;
+  let wordBuf = state.liveResponse.wordBuf || '';
+
+  function flushWord() {
+    if (!wordBuf) return;
+    if (col + wordBuf.length > maxCol && col > INDENT_LEN) {
+      process.stdout.write('\n' + INDENT);
+      col = INDENT_LEN;
+    }
+    process.stdout.write(c(wordBuf, C.white));
+    col += wordBuf.length;
+    wordBuf = '';
+  }
+
+  for (const ch of delta) {
+    if (ch === '\n') {
+      flushWord();
+      process.stdout.write('\n' + INDENT);
+      col = INDENT_LEN;
+      continue;
+    }
+
+    if (ch === ' ' || ch === '\t') {
+      flushWord();
+      if (col < maxCol) {
+        process.stdout.write(ch === '\t' ? '  ' : ' ');
+        col += ch === '\t' ? 2 : 1;
+      }
+      continue;
+    }
+
+    wordBuf += ch;
+
+    if (wordBuf.length >= maxCol - INDENT_LEN) {
+      flushWord();
+    }
+  }
+
+  state.liveResponse.col = col;
+  state.liveResponse.wordBuf = wordBuf;
 }
 
 function endAssistantStream(state) {
@@ -268,8 +440,13 @@ function printMemory(state) {
     return;
   }
 
+  const width = contentWidth();
+  const wrapped = wrapLines(state.memorySummary, width - INDENT_LEN, INDENT);
+
   console.log('');
-  console.log(`  ${c(state.memorySummary, C.light)}`);
+  for (const line of wrapped) {
+    console.log(c(line, C.light));
+  }
   console.log('');
 }
 
@@ -322,6 +499,7 @@ function paint(text, color) {
 module.exports = {
   beginAssistantStream,
   beginThinkingStream,
+  contentWidth,
   endAssistantStream,
   endThinkingStream,
   logEvent,

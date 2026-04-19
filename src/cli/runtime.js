@@ -101,7 +101,7 @@ async function runSinglePrompt(prompt, options = {}) {
   }
 }
 
-async function runInteractiveChat(options = {}) {
+async function runInteractiveChatClassic(options = {}) {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -148,6 +148,21 @@ async function runInteractiveChat(options = {}) {
     }
   } finally {
     rl.close();
+  }
+}
+
+async function runInteractiveChat(options = {}) {
+  let useTui = false;
+  try {
+    require.resolve('ink');
+    useTui = true;
+  } catch {}
+
+  if (useTui) {
+    const { startTUI } = await import('../tui/app.mjs');
+    await startTUI(options);
+  } else {
+    await runInteractiveChatClassic(options);
   }
 }
 

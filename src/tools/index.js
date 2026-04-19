@@ -161,8 +161,15 @@ async function runProcess(command, args, options = {}) {
 
 async function askConfirmation(rl, title, detail, paint, state) {
   if (state?.autoApprove) {
-    console.error(`  ${paint('↪', 'green')} ${paint(title, 'dim')}`);
+    if (!state?.tuiConfirm) {
+      console.error(`  ${paint('\u21AA', 'green')} ${paint(title, 'dim')}`);
+    }
     return true;
+  }
+
+  if (state?.tuiConfirm) {
+    const answer = await state.tuiConfirm(title, detail || '');
+    return answer === 's' || answer === 'si' || answer === 'y' || answer === 'yes';
   }
 
   if (!rl) {
@@ -178,7 +185,7 @@ async function askConfirmation(rl, title, detail, paint, state) {
   }
   console.error('');
 
-  const answer = (await rl.question(`  ${paint('s/N', 'yellow')} ${paint('❯', 'yellow')} `))
+  const answer = (await rl.question(`  ${paint('s/N', 'yellow')} ${paint('\u276F', 'yellow')} `))
     .trim()
     .toLowerCase();
   return answer === 's' || answer === 'si' || answer === 'y' || answer === 'yes';
