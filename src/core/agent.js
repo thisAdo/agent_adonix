@@ -259,7 +259,6 @@ async function runAgentTurn(input, state, ui) {
       const secondaryPromises = otherKeys.map(k =>
         withTimeout(chatSilent({ messages, modelKey: k }).catch(() => null))
       );
-      // No bloqueamos al primario — resolvemos despues
       secondaryResults = secondaryPromises.map((p, i) => ({ promise: p, key: otherKeys[i] }));
     }
 
@@ -273,30 +272,76 @@ async function runAgentTurn(input, state, ui) {
 
       for (let i = 0; i < settled.length; i++) {
         const val = settled[i].status === 'fulfilled' ? settled[i].value : null;
-        if (!val?.answer) continue;
-        const altParsed = parseAgentResponse(val.answer);
         const label = MODELS[secondaryResults[i].key]?.label || secondaryResults[i].key;
+
+        if (!val?.answer) {
+          ui.logEvent(state, 'info', `⏳ ${label} — sin respuesta`);
+          continue;
+        }
+
+        const altParsed = parseAgentResponse(val.answer);
 
         if (altParsed.type === 'tool') {
           toolSuggestions.push({ parsed: altParsed, label });
-          ui.logEvent(state, 'info', `${label} sugiere ${altParsed.tool}`);
+          ui.logEvent(state, 'info', `🔧 ${label} sugiere ${altParsed.tool}`);
         } else if (altParsed.type === 'final' && altParsed.content?.trim()) {
           extras.push({ content: altParsed.content, label });
-          ui.logEvent(state, 'info', `Perspectiva de ${label} integrada`);
+          ui.logEvent(state, 'info', `✓ ${label} respondió`);
         }
       }
 
       if (parsed.type === 'final' && toolSuggestions.length >= 2) {
-        // Mayoria sugiere herramienta — usarla
         parsed = toolSuggestions[0].parsed;
-        ui.logEvent(state, 'info', `${toolSuggestions.length} modelos concuerdan en usar ${parsed.tool}`);
+        ui.logEvent(state, 'info', `🤝 ${toolSuggestions.length} modelos concuerdan: ${parsed.tool}`);
       } else if (parsed.type === 'final' && extras.length > 0) {
-        const combined = extras.map(e => e.content).join('\n\n');
-        parsed = { type: 'final', content: parsed.content + '\n\n---\n' + combined };
+        // Sintetizar todas las perspectivas en UNA sola respuesta
+        const activeLabel = MODELS[state.activeModel || DEFAULT_MODEL_KEY]?.label || 'Primario';
+        ui.logEvent(state, 'info', `🤝 Sintetizando: ${[activeLabel, ...extras.map(e => e.label)].join(' + ')}`);
+
+        const synthMessages = [
+          {
+            role: 'system',
+            content: [
+              'Eres Adonix. Varios modelos IA analizaron la misma pregunta del usuario.',
+              'Tu trabajo: crear UNA SOLA respuesta final unificada.',
+              'Reglas:',
+              '- NO repitas informacion que ya este cubierta por otro modelo',
+              '- Integra las perspectivas unicas de cada uno naturalmente',
+              '- Si todos dicen lo mismo, da UNA respuesta limpia sin redundancia',
+              '- Se directo y conciso',
+              '- Responde en español',
+              '- NO menciones que estas sintetizando ni que hay multiples modelos',
+              '- NO uses separadores --- ni secciones por modelo',
+              '- Responde como si fueras un solo agente dando la mejor respuesta posible',
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
+              `Respuesta de ${activeLabel}:\n${parsed.content}`,
+              '',
+              ...extras.map(e => `Respuesta de ${e.label}:\n${e.content}`),
+              '',
+              'Crea la respuesta final unificada:',
+            ].join('\n'),
+          },
+        ];
+
+        try {
+          const synthesis = await requestModel(synthMessages, state, ui, {
+            label: 'Concuerdo — unificando',
+          });
+          if (synthesis?.trim()) {
+            parsed = { type: 'final', content: synthesis.trim() };
+            ui.logEvent(state, 'info', '🤝 Respuesta unificada lista');
+          }
+        } catch {
+          // Si falla la sintesis, usar respuesta primaria tal cual
+        }
       } else if (parsed.type === 'tool' && toolSuggestions.length > 0) {
         const matching = toolSuggestions.filter(t => t.parsed.tool === parsed.tool);
         if (matching.length > 0) {
-          ui.logEvent(state, 'info', `${matching.length + 1} modelos concuerdan: ${parsed.tool}`);
+          ui.logEvent(state, 'info', `🤝 ${matching.length + 1} modelos concuerdan: ${parsed.tool}`);
         }
       }
     }
