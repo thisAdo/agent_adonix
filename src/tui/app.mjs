@@ -686,24 +686,35 @@ function InputBar({ onSubmit, processing }) {
 
   if (suggestions.length === 0) return inputLine;
 
+  const maxVisible = 8;
   const safeIdx = Math.min(suggestIdx, suggestions.length - 1);
-  const visible = suggestions.slice(0, 8);
+  const windowStart = Math.max(0, Math.min(safeIdx - maxVisible + 1, suggestions.length - maxVisible));
+  const visible = suggestions.slice(windowStart, windowStart + maxVisible);
+  const hasMore = suggestions.length > maxVisible;
 
   return h(Box, { flexDirection: 'column' },
     inputLine,
     h(Box, { flexDirection: 'column', paddingLeft: 5, marginTop: 0 },
-      ...visible.map((cmd, i) =>
-        h(Box, { key: cmd.name },
+      hasMore && windowStart > 0
+        ? h(Text, { color: T.textInvis }, '  \u2191 mas')
+        : null,
+      ...visible.map((cmd, i) => {
+        const realIdx = windowStart + i;
+        const selected = realIdx === safeIdx;
+        return h(Box, { key: cmd.name },
           h(Text, {
-            color: i === safeIdx ? T.accent : T.textMuted,
-            bold: i === safeIdx,
-          }, i === safeIdx ? '\u25b8 ' : '  '),
+            color: selected ? T.accent : T.textMuted,
+            bold: selected,
+          }, selected ? '\u25b8 ' : '  '),
           h(Text, {
-            color: i === safeIdx ? T.accent : T.textMuted,
+            color: selected ? T.accent : T.textMuted,
           }, `/${cmd.name}`),
           h(Text, { color: T.textGhost }, `  ${cmd.desc}`),
-        ),
-      ),
+        );
+      }),
+      hasMore && windowStart + maxVisible < suggestions.length
+        ? h(Text, { color: T.textInvis }, '  \u2193 mas')
+        : null,
       h(Box, { paddingTop: 0 },
         h(Text, { color: T.textInvis }, 'Tab completar \u00b7 \u2191\u2193 navegar'),
       ),

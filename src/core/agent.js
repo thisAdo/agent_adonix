@@ -240,7 +240,7 @@ async function runAgentTurn(input, state, ui) {
     const messages = buildConversationMessages(
       state,
       turnMessages,
-      buildSystemPrompt(state.cwd),
+      buildSystemPrompt(state.cwd, state),
     );
 
     const primaryPromise = requestModel(messages, state, ui, {

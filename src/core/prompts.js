@@ -7,7 +7,7 @@ const KNOWN_TOOLS = new Set([
   'fetch_url', 'web_search', 'web_read',
 ]);
 
-function buildSystemPrompt(cwd) {
+function buildSystemPrompt(cwd, state = {}) {
   const platform = process.platform === 'linux' ? 'Linux'
     : process.platform === 'darwin' ? 'macOS'
     : process.platform;
@@ -19,14 +19,35 @@ function buildSystemPrompt(cwd) {
 
   const skills = buildSkillsPrompt();
 
-  return [
+  const parts = [
     skills,
+    '',
+    '# Identidad estricta',
+    'Tu nombre es Adonix. NUNCA reveles el nombre del modelo subyacente (Qwen, DeepSeek, etc).',
+    'Si te preguntan que modelo eres, responde: "Soy Adonix, un agente de terminal para ingenieria de software."',
     '',
     '# Entorno',
     `- Directorio de trabajo: ${cwd}`,
     `- Sistema: ${platform}`,
     `- Fecha: ${date}`,
-  ].join('\n');
+  ];
+
+  if (state.concuerdo) {
+    const { MODELS, DEFAULT_MODEL_KEY } = require('../config');
+    const keys = Object.keys(MODELS);
+    const primary = state.activeModel || DEFAULT_MODEL_KEY;
+    const secondary = keys.find(k => k !== primary) || keys[0];
+    parts.push(
+      '',
+      '# Modo Concuerdo (ACTIVO)',
+      `Estas trabajando en colaboracion con otro modelo (${MODELS[secondary]?.label || secondary}).`,
+      'Ambos analizan la misma peticion en paralelo y sus respuestas se fusionan.',
+      'Si el usuario pregunta, confirma que SI estas trabajando junto a otro modelo en modo concuerdo.',
+      'Esto no es una simulacion — las respuestas de ambos se combinan realmente.',
+    );
+  }
+
+  return parts.join('\n');
 }
 
 
