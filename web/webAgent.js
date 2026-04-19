@@ -256,10 +256,10 @@ async function searchTextInRepo(ctx, { pattern, path, glob }) {
   return results;
 }
 
-async function attemptAutomaticRecovery(answer, history, ctx, state) {
-  const fingerprint = normalizeReplyFingerprint(answer);
-  const latestUserPrompt = getLatestUserPrompt(history);
-  const mentionedPaths = extractMentionedPaths(answer, ctx.fileTree);
+async function attemptAutomaticRecovery(sourceText, conversationMessages, ctx, state) {
+  const fingerprint = normalizeReplyFingerprint(sourceText);
+  const latestUserPrompt = getLatestUserPrompt(conversationMessages);
+  const mentionedPaths = extractMentionedPaths(sourceText, ctx.fileTree);
 
   for (const path of mentionedPaths) {
     const key = `read:${path}`;
@@ -267,12 +267,12 @@ async function attemptAutomaticRecovery(answer, history, ctx, state) {
     state.autoActions.add(key);
     const toolResult = await executeTool('read_file', { path }, ctx);
     return {
-      assistant: answer,
+      assistant: sourceText,
       followUps: [{ tool: 'read_file', content: toolResult }],
     };
   }
 
-  const pattern = extractSearchPattern(answer, latestUserPrompt);
+  const pattern = extractSearchPattern(sourceText, latestUserPrompt);
   if (pattern) {
     const key = `search:${pattern.toLowerCase()}`;
     if (!state.autoActions.has(key)) {
@@ -282,7 +282,7 @@ async function attemptAutomaticRecovery(answer, history, ctx, state) {
         glob: '**/*.js',
       }, ctx);
       return {
-        assistant: answer,
+        assistant: sourceText,
         followUps: [{ tool: 'search_text', content: toolResult }],
       };
     }
@@ -575,6 +575,20 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (!String(answer || '').trim()) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
+      const recovery = await attemptAutomaticRecovery(
+        `${thinkingContent}\n${answer}`.trim(),
+        modelMessages,
+        toolCtx,
+        loopState,
+      );
+      if (recovery) {
+        modelMessages.push({ role: 'assistant', content: recovery.assistant });
+        for (const item of recovery.followUps) {
+          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
+        }
+        loopState.repeatCount = 0;
+        continue;
+      }
       modelMessages.push({
         role: 'user',
         content: [
@@ -606,12 +620,18 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && looksLikeInternalPlan(parsed.content || answer)) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
-      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      const recovery = await attemptAutomaticRecovery(
+        parsed.content || answer,
+        modelMessages,
+        toolCtx,
+        loopState,
+      );
       if (recovery) {
         modelMessages.push({ role: 'assistant', content: recovery.assistant });
         for (const item of recovery.followUps) {
           modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
         }
+        loopState.repeatCount = 0;
         continue;
       }
       modelMessages.push({ role: 'assistant', content: answer });
@@ -630,12 +650,18 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && looksLikeDeferral(parsed.content || answer)) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
-      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      const recovery = await attemptAutomaticRecovery(
+        parsed.content || answer,
+        modelMessages,
+        toolCtx,
+        loopState,
+      );
       if (recovery) {
         modelMessages.push({ role: 'assistant', content: recovery.assistant });
         for (const item of recovery.followUps) {
           modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
         }
+        loopState.repeatCount = 0;
         continue;
       }
       modelMessages.push({ role: 'assistant', content: answer });
@@ -677,12 +703,18 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && loopState.repeatCount >= 3) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
-      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      const recovery = await attemptAutomaticRecovery(
+        `${thinkingContent}\n${parsed.content || answer}`.trim(),
+        modelMessages,
+        toolCtx,
+        loopState,
+      );
       if (recovery) {
         modelMessages.push({ role: 'assistant', content: recovery.assistant });
         for (const item of recovery.followUps) {
           modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
         }
+        loopState.repeatCount = 0;
         continue;
       }
     }
