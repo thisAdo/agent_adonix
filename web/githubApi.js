@@ -5,14 +5,15 @@ function encodePath(filePath) {
 }
 
 async function ghFetch(urlPath, token, options = {}) {
+  const { headers: extraHeaders, ...rest } = options;
   const res = await fetch(`${BASE}${urlPath}`, {
+    ...rest,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github.v3+json',
       'User-Agent': 'Adonix-Web',
-      ...options.headers,
+      ...extraHeaders,
     },
-    ...options,
   });
   if (!res.ok) {
     if (res.status === 401) {
