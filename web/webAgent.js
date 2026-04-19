@@ -247,14 +247,16 @@ function getEditTargetScore(path, sourceText = '', latestUserPrompt = '') {
   const lowerPath = String(path || '').toLowerCase();
   const filename = lowerPath.split('/').pop() || '';
   const source = `${sourceText} ${latestUserPrompt}`.toLowerCase();
+  const basenameNoExt = filename.replace(/\.[^.]+$/, '');
 
-  if (filename && source.includes(filename)) score += 8;
-  if (lowerPath && source.includes(lowerPath)) score += 10;
+  if (filename && source.includes(filename)) score += 10;
+  if (basenameNoExt && source.includes(basenameNoExt)) score += 5;
+  if (lowerPath && source.includes(lowerPath)) score += 12;
 
   if (/\.(js|ts|jsx|tsx|py|go|java|php|rb)$/.test(lowerPath)) score += 2;
   if (/^(comandos|commands|cmds|src\/commands|plugins)\//.test(lowerPath)) score += 4;
-  if (/^(core|utils|lib|helpers)\//.test(lowerPath)) score -= 3;
-  if (/resolver|database|config|index/.test(filename)) score -= 1;
+  if (/^(core|utils|lib|helpers)\//.test(lowerPath)) score += 1;
+  if (/resolver|database|config|index/.test(filename) && source.includes(filename)) score += 2;
 
   return score;
 }
@@ -300,6 +302,7 @@ function buildForcedWritePrompt(state, conversationMessages, sourceText = '') {
     'Responde AHORA SOLO con un JSON valido de write_file.',
     `El path debe ser exactamente "${path}".`,
     'El campo content debe incluir el archivo COMPLETO ya corregido.',
+    'Cualquier archivo del repo puede ser el objetivo real, incluido core/*. No asumas que core solo es auxiliar.',
     'Si de verdad necesitas otro archivo auxiliar, usa read_file para ese archivo. Si no, emite write_file ya.',
     '',
     `Archivo objetivo actual (${path}):`,
