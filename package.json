@@ -1,7 +1,7 @@
 {
   "name": "adonix",
   "version": "1.0.0",
-  "private": true,
+
   "description": "Agente local de terminal",
   "bin": {
     "adonix": "./adonix.js"
