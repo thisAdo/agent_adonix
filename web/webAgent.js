@@ -446,6 +446,20 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
       onEvent({ type: 'thinking_end', duration: dur });
     }
 
+    if (!String(answer || '').trim()) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      modelMessages.push({
+        role: 'user',
+        content: [
+          'Terminaste de pensar pero no emitiste ninguna respuesta.',
+          'Debes continuar ahora mismo.',
+          'Si necesitas actuar, usa una herramienta.',
+          'Si ya resolviste la tarea, responde solo con el resultado final.',
+        ].join(' '),
+      });
+      continue;
+    }
+
     const parsed = parseAgentResponse(answer);
 
     if (parsed.type === 'final' && looksLikeToolPayload(parsed.content || answer)) {
@@ -487,6 +501,21 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
         content: [
           'No pidas permiso ni delegues el siguiente paso.',
           'Busca los archivos necesarios con las herramientas disponibles, aplica el cambio y solo despues responde con el resultado final.',
+          'Continua ahora.',
+        ].join(' '),
+      });
+      continue;
+    }
+
+    if (parsed.type === 'final' && !String(parsed.content || '').trim()) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      modelMessages.push({ role: 'assistant', content: answer });
+      modelMessages.push({
+        role: 'user',
+        content: [
+          'Tu respuesta final quedo vacia.',
+          'No la dejes vacia.',
+          'Usa herramientas si hace falta o responde con el resultado final completo.',
           'Continua ahora.',
         ].join(' '),
       });

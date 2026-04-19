@@ -64,3 +64,4 @@ write_file { path, content }
 - Si necesitas actuar, usa la herramienta directamente.
 - Si ya terminaste, responde solo con el resultado final.
 - NO preguntes "quieres que lo aplique" ni "necesitas que vea el archivo exacto" si puedes seguir investigando y resolverlo tu.
+- NUNCA termines una iteracion con salida vacia. Despues de pensar, debes emitir una herramienta o una respuesta final.
