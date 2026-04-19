@@ -20,7 +20,8 @@ const {
 } = require('../config');
 
 const h = React.createElement;
-const MAX_THINKING_DISPLAY = 20;
+const MAX_THINKING_LINES = 24;
+const SPIN_MS = 80;
 
 class UIStore extends EventEmitter {
   constructor() {
@@ -32,6 +33,7 @@ class UIStore extends EventEmitter {
     this.spinner = null;
     this.processing = false;
     this.confirmRequest = null;
+    this.turnCount = 0;
     this._idCounter = 0;
     this._scheduled = false;
   }
@@ -43,7 +45,7 @@ class UIStore extends EventEmitter {
   }
 
   setSpinner(label) {
-    this.spinner = label ? { label } : null;
+    this.spinner = label ? { label, started: Date.now() } : null;
     this._emit();
   }
 
@@ -120,6 +122,13 @@ function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m + 'm ' + (s % 60) + 's';
+}
+
 function useStore(store) {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -129,60 +138,67 @@ function useStore(store) {
   }, [store]);
 }
 
-function Header({ state }) {
-  const key = state?.activeModel || DEFAULT_MODEL_KEY;
-  const model = (MODELS[key]?.label || key).toLowerCase();
-
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginBottom: 1 },
+function Banner({ model, resumed }) {
+  return h(Box, { flexDirection: 'column', paddingLeft: 1 },
     h(Box, null,
-      h(Text, { bold: true, color: 'white' }, '\u25C6 ' + APP_NAME + '  '),
-      h(Text, { color: 'gray' }, '\u00B7 '),
-      h(Text, { color: 'gray', dimColor: true }, model),
+      h(Text, { bold: true, inverse: true }, ' \u25C9 ' + APP_NAME.toLowerCase() + ' '),
+      h(Text, null, ' '),
+      h(Text, { dimColor: true }, model),
     ),
-    h(Text, { color: 'gray', dimColor: true }, '/help para comandos'),
+    h(Box, { paddingLeft: 2 },
+      h(Text, { dimColor: true, italic: true },
+        (resumed ? 'sesi\u00F3n reanudada' : 'nueva sesi\u00F3n')
+        + '  \u00B7  /help para comandos'),
+    ),
+    h(Box, { paddingLeft: 1, marginTop: 0 },
+      h(Text, { dimColor: true }, '\u2500'.repeat(48)),
+    ),
   );
 }
 
-function SpinnerLine({ label }) {
+function SpinnerLine({ label, started }) {
   const [frame, setFrame] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
   useEffect(() => {
-    const timer = setInterval(
-      () => setFrame(f => (f + 1) % THINK_FRAMES.length),
-      80,
-    );
+    const timer = setInterval(() => {
+      setFrame(f => (f + 1) % THINK_FRAMES.length);
+      if (started) setElapsed(Date.now() - started);
+    }, SPIN_MS);
     return () => clearInterval(timer);
-  }, []);
+  }, [started]);
+
+  const elapsedStr = elapsed > 1000 ? '  ' + formatElapsed(elapsed) : '';
 
   return h(Box, { paddingLeft: 2 },
-    h(Text, { color: 'gray' }, THINK_FRAMES[frame] + ' '),
-    h(Text, { color: 'gray', dimColor: true }, label),
+    h(Text, { color: 'cyan' }, THINK_FRAMES[frame] + ' '),
+    h(Text, { dimColor: true, italic: true }, label),
+    elapsedStr ? h(Text, { dimColor: true }, elapsedStr) : null,
   );
 }
 
 function EventLine({ kind, title, detail }) {
-  const symbols = {
-    info: '\u00B7', think: '\u25CB', tool: '\u25B8',
-    ok: '\u2713', warn: '!', error: '\u2717',
+  const icons = {
+    info: { sym: '\u25CB', color: 'gray' },
+    think: { sym: '\u25CE', color: 'gray' },
+    tool: { sym: '\u25CF', color: 'magenta' },
+    ok: { sym: '\u2713', color: 'green' },
+    warn: { sym: '\u26A0', color: 'yellow' },
+    error: { sym: '\u2717', color: 'red' },
   };
-  const colors = {
-    ok: 'green', error: 'red', warn: 'yellow',
-  };
-  const sym = symbols[kind] || '\u00B7';
-  const symColor = colors[kind] || 'gray';
+  const { sym, color } = icons[kind] || icons.info;
 
   return h(Box, { paddingLeft: 2 },
-    h(Text, { color: symColor }, sym + ' '),
+    h(Text, { color }, sym + ' '),
     h(Text, { color: 'white' }, title),
-    detail
-      ? h(Text, { color: 'gray', dimColor: true }, '  ' + detail)
-      : null,
+    detail ? h(Text, { dimColor: true }, '  ' + detail) : null,
   );
 }
 
 function UserMessage({ text }) {
   return h(Box, { paddingLeft: 2, marginTop: 1 },
     h(Text, { bold: true, color: 'cyan' }, '\u276F '),
-    h(Text, { color: 'white', wrap: 'wrap' }, text),
+    h(Text, { color: 'white', bold: true, wrap: 'wrap' }, text),
   );
 }
 
@@ -190,47 +206,48 @@ function ThinkingBlock({ text, elapsed, live }) {
   const lines = text
     .split('\n')
     .filter(l => l.trim())
-    .slice(0, MAX_THINKING_DISPLAY);
-  const truncated = text.split('\n').filter(l => l.trim()).length > MAX_THINKING_DISPLAY;
+    .slice(0, MAX_THINKING_LINES);
+  const total = text.split('\n').filter(l => l.trim()).length;
+  const truncated = total > MAX_THINKING_LINES;
 
-  return h(Box, { flexDirection: 'column', paddingLeft: 2 },
-    h(Text, { color: 'gray', dimColor: true, italic: true },
-      live ? '\u250C pensando...' : '\u250C pens\u00F3',
-    ),
-    ...lines.map((line, i) =>
-      h(Text, {
-        key: String(i),
-        color: 'gray',
-        dimColor: true,
-        wrap: 'wrap',
-      }, '\u2502 ' + line),
-    ),
-    truncated
-      ? h(Text, { color: 'gray', dimColor: true }, '\u2502 ...')
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => setTick(t => t + 1), 200);
+    return () => clearInterval(timer);
+  }, [live]);
+
+  const label = live
+    ? '\u25CE pensando\u2026'
+    : '\u25CE pens\u00F3  ' + elapsed + 's';
+
+  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 0 },
+    h(Text, { dimColor: true, italic: true }, label),
+    lines.length > 0
+      ? h(Box, { flexDirection: 'column', paddingLeft: 3 },
+        ...lines.map((line, i) =>
+          h(Text, { key: String(i), dimColor: true, wrap: 'wrap' }, line),
+        ),
+        truncated
+          ? h(Text, { dimColor: true, italic: true },
+            '(' + (total - MAX_THINKING_LINES) + ' l\u00EDneas m\u00E1s)')
+          : null,
+      )
       : null,
-    live
-      ? null
-      : h(Text, { color: 'gray', dimColor: true }, '\u2514 ' + elapsed + 's'),
   );
 }
 
 function AnswerBlock({ text, live }) {
   if (!text) return null;
-
   return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
-    h(Text, { color: 'white', wrap: 'wrap' },
-      h(Text, { bold: true }, '\u25C6 '),
-      text,
-    ),
-    live
-      ? h(Text, { color: 'gray', dimColor: true }, '  \u2588')
-      : null,
+    h(Text, { color: 'white', wrap: 'wrap' }, text),
+    live ? h(Text, { dimColor: true }, '\u2588') : null,
   );
 }
 
-function SystemMessage({ text }) {
+function SystemMsg({ text }) {
   return h(Box, { paddingLeft: 2 },
-    h(Text, { color: 'gray', wrap: 'wrap' }, text),
+    h(Text, { dimColor: true, wrap: 'wrap' }, text),
   );
 }
 
@@ -238,32 +255,37 @@ function ConfirmBar({ title, detail }) {
   const detailLines = (detail || '')
     .split('\n')
     .filter(l => l.trim())
-    .slice(0, 6);
+    .slice(0, 8);
 
   return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
     h(Box, null,
-      h(Text, { color: 'yellow' }, '? '),
-      h(Text, { color: 'white', bold: true }, title),
-    ),
-    ...detailLines.map((line, i) =>
-      h(Text, {
-        key: String(i),
-        color: 'gray',
-        dimColor: true,
-        wrap: 'wrap',
-      }, '    ' + line),
+      h(Text, { dimColor: true }, '\u2500'.repeat(40)),
     ),
     h(Box, { marginTop: 0 },
-      h(Text, { color: 'yellow' }, '  s'),
-      h(Text, { color: 'gray' }, '/'),
-      h(Text, { color: 'yellow' }, 'N'),
-      h(Text, { color: 'gray' }, ' \u276F '),
+      h(Text, { color: 'yellow', bold: true }, '\u26A0 '),
+      h(Text, { color: 'white', bold: true }, title),
+    ),
+    detailLines.length > 0
+      ? h(Box, { flexDirection: 'column', paddingLeft: 3 },
+        ...detailLines.map((line, i) =>
+          h(Text, { key: String(i), dimColor: true, wrap: 'wrap' }, line),
+        ),
+      )
+      : null,
+    h(Box, { marginTop: 1 },
+      h(Text, { dimColor: true }, '  '),
+      h(Text, { color: 'green', bold: true }, 's'),
+      h(Text, { dimColor: true }, ' aceptar  '),
+      h(Text, { color: 'red', bold: true }, 'n'),
+      h(Text, { dimColor: true }, ' rechazar'),
     ),
   );
 }
 
 function StaticItem({ item }) {
   switch (item.type) {
+    case 'banner':
+      return h(Banner, { model: item.model, resumed: item.resumed });
     case 'user':
       return h(UserMessage, { text: item.text });
     case 'thinking':
@@ -271,19 +293,15 @@ function StaticItem({ item }) {
     case 'answer':
       return h(AnswerBlock, { text: item.text });
     case 'event':
-      return h(EventLine, {
-        kind: item.kind,
-        title: item.title,
-        detail: item.detail,
-      });
+      return h(EventLine, { kind: item.kind, title: item.title, detail: item.detail });
     case 'system':
-      return h(SystemMessage, { text: item.text });
+      return h(SystemMsg, { text: item.text });
     default:
       return null;
   }
 }
 
-function InputBar({ onSubmit }) {
+function InputBar({ onSubmit, model }) {
   const [value, setValue] = useState('');
 
   useInput((input, key) => {
@@ -295,27 +313,34 @@ function InputBar({ onSubmit }) {
       }
       return;
     }
-
     if (key.backspace || key.delete) {
       setValue(v => v.slice(0, -1));
       return;
     }
-
     if (input && !key.ctrl && !key.meta) {
       setValue(v => v + input);
     }
   });
 
-  return h(Box, { paddingLeft: 2, marginTop: 1 },
-    h(Text, { bold: true, color: 'cyan' }, '\u276F '),
-    h(Text, { color: 'white' }, value),
-    h(Text, { color: 'gray', dimColor: true }, '\u2588'),
+  return h(Box, { flexDirection: 'column' },
+    h(Box, { paddingLeft: 2, marginTop: 1 },
+      h(Text, { bold: true, color: 'cyan' }, '\u276F '),
+      h(Text, { color: 'white' }, value),
+      h(Text, { dimColor: true }, '\u2588'),
+    ),
+    h(Box, { paddingLeft: 4 },
+      h(Text, { dimColor: true },
+        model + '  \u00B7  /help  \u00B7  esc salir'),
+    ),
   );
 }
 
 function App({ store, state, onSubmit }) {
   useStore(store);
   const { exit } = useApp();
+
+  const modelKey = state?.activeModel || DEFAULT_MODEL_KEY;
+  const modelLabel = (MODELS[modelKey]?.label || modelKey).toLowerCase();
 
   const handleInput = useCallback((text) => {
     if (text === '/exit' || text === '/quit') {
@@ -330,8 +355,11 @@ function App({ store, state, onSubmit }) {
       exit();
       return;
     }
+    if (key.escape && !store.processing && !store.confirmRequest) {
+      exit();
+      return;
+    }
     if (!store.confirmRequest) return;
-
     if (input === 's' || input === 'y') {
       store.resolveConfirm('s');
     } else if (input === 'n' || key.return) {
@@ -343,8 +371,6 @@ function App({ store, state, onSubmit }) {
   const showConfirm = !!store.confirmRequest;
 
   return h(Box, { flexDirection: 'column' },
-    h(Header, { state }),
-
     h(Static, { items: store.items }, (item) =>
       h(Box, { key: item.id, flexDirection: 'column' },
         h(StaticItem, { item }),
@@ -352,21 +378,15 @@ function App({ store, state, onSubmit }) {
     ),
 
     store.spinner && !store.liveThinking
-      ? h(SpinnerLine, { label: store.spinner.label })
+      ? h(SpinnerLine, { label: store.spinner.label, started: store.spinner.started })
       : null,
 
     store.liveThinking
-      ? h(ThinkingBlock, {
-        text: store.liveThinking.text,
-        live: true,
-      })
+      ? h(ThinkingBlock, { text: store.liveThinking.text, live: true })
       : null,
 
     store.liveAnswer
-      ? h(AnswerBlock, {
-        text: store.liveAnswer.text,
-        live: true,
-      })
+      ? h(AnswerBlock, { text: store.liveAnswer.text, live: true })
       : null,
 
     showConfirm
@@ -377,7 +397,7 @@ function App({ store, state, onSubmit }) {
       : null,
 
     showInput
-      ? h(InputBar, { onSubmit: handleInput })
+      ? h(InputBar, { onSubmit: handleInput, model: modelLabel })
       : null,
   );
 }
@@ -406,13 +426,14 @@ function getUiBindings(store, state) {
 
 export async function startTUI(options = {}) {
   const { state, resumed } = await loadOrCreateSessionState(null, options);
-
   const store = new UIStore();
 
   state.rl = null;
   state.tuiConfirm = (title, detail) => store.requestConfirm(title, detail);
 
-  store.addEvent('info', resumed ? 'sesion reanudada' : 'chat activo');
+  const modelKey = state.activeModel || DEFAULT_MODEL_KEY;
+  const modelLabel = (MODELS[modelKey]?.label || modelKey).toLowerCase();
+  store.addItem({ type: 'banner', model: modelLabel, resumed });
 
   const handleSubmit = async (input) => {
     store.processing = true;
