@@ -10,6 +10,8 @@ const CONCUERDO_TIMEOUT = 30000;
 const BUFFER_CHECK = 12;
 const WEB_SKILLS = ['core', 'web-agent', 'code-style', 'reasoning', 'methodology'];
 const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i;
+const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso)\b/i;
+const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta)/i;
 
 function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   const skills = buildSkillsPrompt({ include: WEB_SKILLS });
@@ -53,6 +55,13 @@ function looksLikeToolPayload(text) {
     || /^```(?:json)?/i.test(sample)
     || /"type"\s*:\s*"tool"/i.test(sample)
     || TOOL_HINT_RE.test(sample);
+}
+
+function looksLikeInternalPlan(text) {
+  const sample = String(text || '').trimStart().slice(0, 320);
+  if (!sample || looksLikeToolPayload(sample)) return false;
+
+  return INTERNAL_PLAN_START_RE.test(sample) && INTERNAL_PLAN_ACTION_RE.test(sample);
 }
 
 async function executeTool(tool, args, ctx) {
@@ -265,6 +274,7 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     let thinkStart = 0;
     let streamStarted = false;
     let isToolBuf = false;
+    let isPlanBuf = false;
 
     try {
       const result = await chat({
@@ -286,9 +296,14 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
           answer += delta;
 
-          if (!streamStarted && !isToolBuf) {
+          if (!streamStarted && !isToolBuf && !isPlanBuf) {
             if (looksLikeToolPayload(answer)) {
               isToolBuf = true;
+              return;
+            }
+
+            if (looksLikeInternalPlan(answer)) {
+              isPlanBuf = true;
               return;
             }
 
@@ -328,6 +343,22 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
           'No muestres JSON al usuario.',
           'Si necesitas una herramienta, responde SOLO con JSON valido.',
           'Si ya terminaste, responde SOLO con texto final limpio.',
+        ].join(' '),
+      });
+      continue;
+    }
+
+    if (parsed.type === 'final' && looksLikeInternalPlan(parsed.content || answer)) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      modelMessages.push({ role: 'assistant', content: answer });
+      modelMessages.push({
+        role: 'user',
+        content: [
+          'Tu ultima salida fue un plan interno.',
+          'No expliques tu plan al usuario.',
+          'Si necesitas leer o editar, usa la herramienta correspondiente.',
+          'Si ya terminaste, responde solo con el resultado final.',
+          'Continua la tarea ahora.',
         ].join(' '),
       });
       continue;

@@ -37,3 +37,12 @@ write_file { path, content }
 3. Analiza y planifica los cambios
 4. Escribe los archivos modificados con write_file (contenido completo)
 5. Confirma al usuario que cambios se hicieron y en que archivos
+
+## Reglas de salida
+
+- NO respondas con planes internos como:
+  - "El usuario quiere..."
+  - "Necesito leer el archivo primero..."
+  - "Voy a analizar y luego editar..."
+- Si necesitas actuar, usa la herramienta directamente.
+- Si ya terminaste, responde solo con el resultado final.
