@@ -23,6 +23,22 @@ const h = React.createElement;
 const MAX_THINKING_LINES = 24;
 const SPIN_MS = 80;
 
+const MIN_SPIN = ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'];
+
+const C = {
+  bg:       'white',
+  text:     '#18181b',
+  sub:      '#71717a',
+  muted:    '#a1a1aa',
+  faint:    '#d4d4d8',
+  ghost:    '#e5e7eb',
+  blue:     '#3b82f6',
+  purple:   '#7c3aed',
+  green:    '#16a34a',
+  amber:    '#d97706',
+  red:      '#dc2626',
+};
+
 class UIStore extends EventEmitter {
   constructor() {
     super();
@@ -138,20 +154,25 @@ function useStore(store) {
   }, [store]);
 }
 
+
 function Banner({ model, resumed }) {
-  return h(Box, { flexDirection: 'column', paddingLeft: 1 },
+  return h(Box, {
+    flexDirection: 'column',
+    paddingLeft: 2,
+    paddingTop: 1,
+    bgColor: C.bg,
+  },
     h(Box, null,
-      h(Text, { bold: true, inverse: true }, ' \u25C9 ' + APP_NAME.toLowerCase() + ' '),
-      h(Text, null, ' '),
-      h(Text, { dimColor: true }, model),
+      h(Text, { bold: true, color: C.text, bgColor: C.bg },
+        '◆  ' + APP_NAME.toLowerCase()),
+      h(Text, { color: C.ghost, bgColor: C.bg }, '    '),
+      h(Text, { color: C.muted, bgColor: C.bg }, model),
     ),
-    h(Box, { paddingLeft: 2 },
-      h(Text, { dimColor: true, italic: true },
-        (resumed ? 'sesi\u00F3n reanudada' : 'nueva sesi\u00F3n')
-        + '  \u00B7  /help para comandos'),
-    ),
-    h(Box, { paddingLeft: 1, marginTop: 0 },
-      h(Text, { dimColor: true }, '\u2500'.repeat(48)),
+    h(Box, null,
+      h(Text, { color: C.faint, bgColor: C.bg },
+        resumed ? 'sesión resumida' : 'sesión nueva'),
+      h(Text, { color: C.ghost, bgColor: C.bg }, '  ·  '),
+      h(Text, { color: C.faint, bgColor: C.bg }, '/help'),
     ),
   );
 }
@@ -162,7 +183,7 @@ function SpinnerLine({ label, started }) {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setFrame(f => (f + 1) % THINK_FRAMES.length);
+      setFrame(f => (f + 1) % MIN_SPIN.length);
       if (started) setElapsed(Date.now() - started);
     }, SPIN_MS);
     return () => clearInterval(timer);
@@ -170,35 +191,40 @@ function SpinnerLine({ label, started }) {
 
   const elapsedStr = elapsed > 1000 ? '  ' + formatElapsed(elapsed) : '';
 
-  return h(Box, { paddingLeft: 2 },
-    h(Text, { color: 'cyan' }, THINK_FRAMES[frame] + ' '),
-    h(Text, { dimColor: true, italic: true }, label),
-    elapsedStr ? h(Text, { dimColor: true }, elapsedStr) : null,
+  return h(Box, { paddingLeft: 2, bgColor: C.bg },
+    h(Text, { color: C.muted, bgColor: C.bg }, MIN_SPIN[frame]),
+    h(Text, { color: C.muted, bgColor: C.bg }, '  ' + label),
+    elapsedStr
+      ? h(Text, { color: C.faint, bgColor: C.bg }, elapsedStr)
+      : null,
   );
 }
 
 function EventLine({ kind, title, detail }) {
   const icons = {
-    info: { sym: '\u25CB', color: 'gray' },
-    think: { sym: '\u25CE', color: 'gray' },
-    tool: { sym: '\u25CF', color: 'magenta' },
-    ok: { sym: '\u2713', color: 'green' },
-    warn: { sym: '\u26A0', color: 'yellow' },
-    error: { sym: '\u2717', color: 'red' },
+    info:  { sym: '·',  color: C.faint },
+    think: { sym: '○',  color: C.faint },
+    tool:  { sym: '⚡', color: C.purple },
+    ok:    { sym: '✓',  color: C.green },
+    warn:  { sym: '!',  color: C.amber },
+    error: { sym: '✕',  color: C.red },
   };
   const { sym, color } = icons[kind] || icons.info;
 
-  return h(Box, { paddingLeft: 2 },
-    h(Text, { color }, sym + ' '),
-    h(Text, { color: 'white' }, title),
-    detail ? h(Text, { dimColor: true }, '  ' + detail) : null,
+  return h(Box, { paddingLeft: 2, bgColor: C.bg },
+    h(Text, { color, bgColor: C.bg }, sym),
+    h(Text, { color: C.faint, bgColor: C.bg }, ' '),
+    h(Text, { color: C.sub, bgColor: C.bg }, title),
+    detail
+      ? h(Text, { color: C.muted, bgColor: C.bg }, '  ' + detail)
+      : null,
   );
 }
 
 function UserMessage({ text }) {
-  return h(Box, { paddingLeft: 2, marginTop: 1 },
-    h(Text, { bold: true, color: 'cyan' }, '\u276F '),
-    h(Text, { color: 'white', bold: true, wrap: 'wrap' }, text),
+  return h(Box, { paddingLeft: 2, marginTop: 1, bgColor: C.bg },
+    h(Text, { color: C.blue, bold: true, bgColor: C.bg }, '› '),
+    h(Text, { color: C.text, bgColor: C.bg, wrap: 'wrap' }, text),
   );
 }
 
@@ -218,19 +244,20 @@ function ThinkingBlock({ text, elapsed, live }) {
   }, [live]);
 
   const label = live
-    ? '\u25CE pensando\u2026'
-    : '\u25CE pens\u00F3  ' + elapsed + 's';
+    ? 'pensando…'
+    : 'pensó  ' + elapsed + 's';
 
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 0 },
-    h(Text, { dimColor: true, italic: true }, label),
+  return h(Box, { flexDirection: 'column', paddingLeft: 2, bgColor: C.bg },
+    h(Text, { color: C.faint, bgColor: C.bg },
+      '○  ' + label),
     lines.length > 0
-      ? h(Box, { flexDirection: 'column', paddingLeft: 3 },
+      ? h(Box, { flexDirection: 'column', paddingLeft: 2 },
         ...lines.map((line, i) =>
-          h(Text, { key: String(i), dimColor: true, wrap: 'wrap' }, line),
+          h(Text, { key: String(i), color: C.ghost, bgColor: C.bg, wrap: 'wrap' }, line),
         ),
         truncated
-          ? h(Text, { dimColor: true, italic: true },
-            '(' + (total - MAX_THINKING_LINES) + ' l\u00EDneas m\u00E1s)')
+          ? h(Text, { color: C.ghost, bgColor: C.bg },
+            '·  ' + (total - MAX_THINKING_LINES) + ' más')
           : null,
       )
       : null,
@@ -239,15 +266,17 @@ function ThinkingBlock({ text, elapsed, live }) {
 
 function AnswerBlock({ text, live }) {
   if (!text) return null;
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
-    h(Text, { color: 'white', wrap: 'wrap' }, text),
-    live ? h(Text, { dimColor: true }, '\u2588') : null,
+  return h(Box, { flexDirection: 'column', paddingLeft: 3, marginTop: 1, bgColor: C.bg },
+    h(Text, { color: C.text, bgColor: C.bg, wrap: 'wrap' }, text),
+    live
+      ? h(Text, { color: C.blue, bgColor: C.bg }, '▎')
+      : null,
   );
 }
 
 function SystemMsg({ text }) {
-  return h(Box, { paddingLeft: 2 },
-    h(Text, { dimColor: true, wrap: 'wrap' }, text),
+  return h(Box, { paddingLeft: 2, bgColor: C.bg },
+    h(Text, { color: C.muted, bgColor: C.bg, wrap: 'wrap' }, text),
   );
 }
 
@@ -257,27 +286,23 @@ function ConfirmBar({ title, detail }) {
     .filter(l => l.trim())
     .slice(0, 8);
 
-  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1 },
+  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1, bgColor: C.bg },
     h(Box, null,
-      h(Text, { dimColor: true }, '\u2500'.repeat(40)),
-    ),
-    h(Box, { marginTop: 0 },
-      h(Text, { color: 'yellow', bold: true }, '\u26A0 '),
-      h(Text, { color: 'white', bold: true }, title),
+      h(Text, { color: C.amber, bold: true, bgColor: C.bg }, '! '),
+      h(Text, { color: C.text, bold: true, bgColor: C.bg }, title),
     ),
     detailLines.length > 0
-      ? h(Box, { flexDirection: 'column', paddingLeft: 3 },
+      ? h(Box, { flexDirection: 'column', paddingLeft: 2 },
         ...detailLines.map((line, i) =>
-          h(Text, { key: String(i), dimColor: true, wrap: 'wrap' }, line),
+          h(Text, { key: String(i), color: C.sub, bgColor: C.bg, wrap: 'wrap' }, line),
         ),
       )
       : null,
     h(Box, { marginTop: 1 },
-      h(Text, { dimColor: true }, '  '),
-      h(Text, { color: 'green', bold: true }, 's'),
-      h(Text, { dimColor: true }, ' aceptar  '),
-      h(Text, { color: 'red', bold: true }, 'n'),
-      h(Text, { dimColor: true }, ' rechazar'),
+      h(Text, { color: C.green, bold: true, bgColor: C.bg }, 's'),
+      h(Text, { color: C.muted, bgColor: C.bg }, ' aceptar   '),
+      h(Text, { color: C.red, bold: true, bgColor: C.bg }, 'n'),
+      h(Text, { color: C.muted, bgColor: C.bg }, ' rechazar'),
     ),
   );
 }
@@ -322,15 +347,15 @@ function InputBar({ onSubmit, model }) {
     }
   });
 
-  return h(Box, { flexDirection: 'column' },
-    h(Box, { paddingLeft: 2, marginTop: 1 },
-      h(Text, { bold: true, color: 'cyan' }, '\u276F '),
-      h(Text, { color: 'white' }, value),
-      h(Text, { dimColor: true }, '\u2588'),
+  return h(Box, { flexDirection: 'column', paddingLeft: 2, marginTop: 1, paddingBottom: 1, bgColor: C.bg },
+    h(Box, null,
+      h(Text, { color: C.blue, bold: true, bgColor: C.bg }, '› '),
+      h(Text, { color: C.text, bgColor: C.bg }, value),
+      h(Text, { color: C.blue, bgColor: C.bg }, '▎'),
     ),
-    h(Box, { paddingLeft: 4 },
-      h(Text, { dimColor: true },
-        model + '  \u00B7  /help  \u00B7  esc salir'),
+    h(Box, null,
+      h(Text, { color: C.faint, bgColor: C.bg }, model),
+      h(Text, { color: C.ghost, bgColor: C.bg }, '  ·  /help  ·  esc'),
     ),
   );
 }
@@ -370,7 +395,7 @@ function App({ store, state, onSubmit }) {
   const showInput = !store.processing && !store.confirmRequest;
   const showConfirm = !!store.confirmRequest;
 
-  return h(Box, { flexDirection: 'column' },
+  return h(Box, { flexDirection: 'column', bgColor: C.bg },
     h(Static, { items: store.items }, (item) =>
       h(Box, { key: item.id, flexDirection: 'column' },
         h(StaticItem, { item }),
