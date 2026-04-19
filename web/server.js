@@ -1,6 +1,8 @@
 const express = require('express');
 const session = require('express-session');
+const FileStore = require('session-file-store')(session);
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const store = require('./store');
@@ -13,11 +15,28 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+// Persistir secreto de sesión en disco
+const SECRET_FILE = path.join(__dirname, 'data', '.session-secret');
+let sessionSecret;
+try {
+  sessionSecret = fs.readFileSync(SECRET_FILE, 'utf8').trim();
+} catch {
+  sessionSecret = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
+  fs.writeFileSync(SECRET_FILE, sessionSecret);
+}
+
 app.use(session({
-  secret: crypto.randomBytes(32).toString('hex'),
+  store: new FileStore({
+    path: path.join(__dirname, 'data', 'sessions'),
+    ttl: 30 * 24 * 60 * 60,
+    retries: 0,
+    logFn: () => {},
+  }),
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 },
+  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000, httpOnly: true },
 }));
 
 function requireAuth(req, res, next) {
