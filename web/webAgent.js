@@ -13,6 +13,13 @@ const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|f
 const XML_TOOL_RE = /<invoke\s+name=|<\w+:tool_call>/i;
 const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso|entendido|dejame|déjame)\b/i;
 const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta|ver el archivo|continuar|resolver)/i;
+const DEFERAL_RE = /(¿(quieres|necesitas|prefieres).*(vea|revise|aplique|cambie|lea)|si (quieres|necesitas) puedo|puedo ver el codigo exacto|puedo revisar el archivo exacto|voy a leer (ambos|estos|esos) archivos)/i;
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
+  '.html', '.css', '.scss', '.sass', '.less', '.yml', '.yaml', '.xml',
+  '.sh', '.bash', '.zsh', '.py', '.go', '.rs', '.java', '.kt', '.swift',
+  '.php', '.rb', '.sql', '.env', '.ini', '.toml',
+]);
 
 function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   const skills = buildSkillsPrompt({ include: WEB_SKILLS });
@@ -28,6 +35,12 @@ function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
     '# Entorno',
     `Repositorio: ${repoOwner}/${repoName}`,
     `Fecha: ${new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+    '',
+    '# Reglas de autonomia',
+    '- Si el usuario pide un cambio, debes hacerlo de punta a punta.',
+    '- Si el usuario dice "continua", debes seguir trabajando.',
+    '- Si no sabes el archivo exacto, usa search_text, glob_files o list_dir.',
+    '- No preguntes "quieres que..." ni "necesitas que..." si puedes investigarlo tu.',
     '',
     'Archivos del repositorio:',
     treeLines,
@@ -64,6 +77,103 @@ function looksLikeInternalPlan(text) {
   if (!sample || looksLikeToolPayload(sample)) return false;
 
   return INTERNAL_PLAN_START_RE.test(sample) && INTERNAL_PLAN_ACTION_RE.test(sample);
+}
+
+function looksLikeDeferral(text) {
+  const sample = String(text || '').trimStart().slice(0, 320);
+  if (!sample || looksLikeToolPayload(sample)) return false;
+  return DEFERAL_RE.test(sample);
+}
+
+function normalizeRepoPath(value = '') {
+  return String(value).replace(/^\.?\//, '').replace(/\/+$/, '').trim();
+}
+
+function escapeRegex(text) {
+  return text.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function globToRegExp(pattern = '') {
+  const normalized = normalizeRepoPath(pattern);
+  if (!normalized) return /^.*$/;
+
+  let source = '^';
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    const next = normalized[i + 1];
+
+    if (ch === '*' && next === '*') {
+      source += '.*';
+      i++;
+      continue;
+    }
+
+    if (ch === '*') {
+      source += '[^/]*';
+      continue;
+    }
+
+    if (ch === '?') {
+      source += '.';
+      continue;
+    }
+
+    source += escapeRegex(ch);
+  }
+
+  source += '$';
+  return new RegExp(source, 'i');
+}
+
+function matchesPathPrefix(filePath, prefix = '') {
+  const cleanPrefix = normalizeRepoPath(prefix);
+  if (!cleanPrefix) return true;
+  return filePath === cleanPrefix || filePath.startsWith(`${cleanPrefix}/`);
+}
+
+function isLikelyTextFile(file) {
+  if (!file?.path || file.size > 200_000) return false;
+  const dot = file.path.lastIndexOf('.');
+  if (dot === -1) return true;
+  return TEXT_FILE_EXTENSIONS.has(file.path.slice(dot).toLowerCase());
+}
+
+function getFilesByGlob(fileTree, { pattern, path }) {
+  const regex = globToRegExp(pattern || '**/*');
+  return fileTree
+    .filter(file => matchesPathPrefix(file.path, path))
+    .filter(file => regex.test(file.path))
+    .map(file => file.path);
+}
+
+async function searchTextInRepo(ctx, { pattern, path, glob }) {
+  const query = String(pattern || '').trim();
+  if (!query) return [];
+
+  const regex = glob ? globToRegExp(glob) : null;
+  const candidates = ctx.fileTree
+    .filter(file => matchesPathPrefix(file.path, path))
+    .filter(file => !regex || regex.test(file.path))
+    .filter(isLikelyTextFile)
+    .slice(0, 60);
+
+  const results = [];
+  const needle = query.toLowerCase();
+
+  for (const file of candidates) {
+    try {
+      const current = await githubApi.readFile(ctx.token, ctx.owner, ctx.repo, file.path);
+      const lines = current.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].toLowerCase().includes(needle)) continue;
+        results.push(`${file.path}:${i + 1}: ${lines[i].trim()}`);
+        if (results.length >= 50) return results;
+      }
+    } catch {}
+  }
+
+  return results;
 }
 
 async function executeTool(tool, args, ctx) {
@@ -126,13 +236,16 @@ async function executeTool(tool, args, ctx) {
         ctx.onEvent({ type: 'tool_done', content: `${items.length} archivos` });
         return items.join('\n') || 'Directorio vacio';
       }
-      case 'search_text':
+      case 'search_text': {
+        const matches = await searchTextInRepo(ctx, args);
+        ctx.onEvent({ type: 'tool_done', content: `${matches.length} coincidencias` });
+        return matches.join('\n') || 'Sin resultados';
+      }
       case 'glob_files': {
-        const pattern = (args.pattern || args.glob || '').toLowerCase();
-        const matches = ctx.fileTree
-          .filter(f => f.path.toLowerCase().includes(pattern))
-          .slice(0, 50)
-          .map(f => f.path);
+        const matches = getFilesByGlob(ctx.fileTree, {
+          pattern: args.pattern || args.glob || '**/*',
+          path: args.path || '',
+        }).slice(0, 100);
         ctx.onEvent({ type: 'tool_done', content: `${matches.length} resultados` });
         return matches.join('\n') || 'Sin resultados';
       }
@@ -361,6 +474,20 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
           'Si necesitas leer o editar, usa la herramienta correspondiente.',
           'Si ya terminaste, responde solo con el resultado final.',
           'Continua la tarea ahora.',
+        ].join(' '),
+      });
+      continue;
+    }
+
+    if (parsed.type === 'final' && looksLikeDeferral(parsed.content || answer)) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      modelMessages.push({ role: 'assistant', content: answer });
+      modelMessages.push({
+        role: 'user',
+        content: [
+          'No pidas permiso ni delegues el siguiente paso.',
+          'Busca los archivos necesarios con las herramientas disponibles, aplica el cambio y solo despues responde con el resultado final.',
+          'Continua ahora.',
         ].join(' '),
       });
       continue;

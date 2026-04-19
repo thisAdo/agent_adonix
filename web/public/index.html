@@ -307,6 +307,7 @@
       if (!sample) return false;
 
       return /^\{/.test(sample)
+        || /<invoke\s+name=|<\w+:tool_call>/i.test(sample)
         || /^```(?:json)?/i.test(sample)
         || /"type"\s*:\s*"tool"/i.test(sample)
         || /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i.test(sample);
