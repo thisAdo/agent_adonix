@@ -14,7 +14,7 @@ const XML_TOOL_RE = /<invoke\s+name=|<\w+:tool_call>/i;
 const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso|entendido|dejame|déjame)\b/i;
 const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta|ver el archivo|continuar|resolver)/i;
 const DEFERAL_RE = /(¿(quieres|necesitas|prefieres).*(vea|revise|aplique|cambie|lea)|si (quieres|necesitas) puedo|puedo ver el codigo exacto|puedo revisar el archivo exacto|voy a leer (ambos|estos|esos) archivos)/i;
-const PENDING_EDIT_RE = /(veo el problema|el problema esta en|voy a (agregar|cambiar|modificar|reemplazar|quitar|usar)|necesito (cambiar|modificar|agregar|quitar|usar)|aqui esta el archivo corregido|lo que necesito cambiar|debo cambiar|tengo que cambiar|voy a aplicar el fix)/i;
+const PENDING_EDIT_RE = /(perfecto, ya tengo todo el codigo|veo el problema|el problema esta en|esto muestra|voy a (agregar|cambiar|modificar|reemplazar|quitar|usar|incorporar|corregir)|necesito (cambiar|modificar|agregar|quitar|usar|corregir)|aqui esta el archivo corregido|lo que necesito cambiar|debo cambiar|tengo que cambiar|voy a aplicar el fix|voy a incorporar|getname del resolver|corregir la logica)/i;
 const TEXT_FILE_EXTENSIONS = new Set([
   '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
   '.html', '.css', '.scss', '.sass', '.less', '.yml', '.yaml', '.xml',
@@ -90,6 +90,23 @@ function looksLikePendingEdit(text) {
   const sample = String(text || '').trimStart().slice(0, 600);
   if (!sample || looksLikeToolPayload(sample)) return false;
   return PENDING_EDIT_RE.test(sample);
+}
+
+function buildForcedWritePrompt(state) {
+  const path = state.lastReadPath || 'archivo-leido';
+  const content = state.lastReadContent || '';
+
+  return [
+    `Ya leiste ${path} y ya identificaste el cambio.`,
+    'No describas el fix.',
+    'Responde AHORA SOLO con un JSON valido de write_file.',
+    `El path debe ser exactamente "${path}".`,
+    'El campo content debe incluir el archivo COMPLETO ya corregido.',
+    'Si de verdad necesitas otro archivo auxiliar, usa read_file para ese archivo. Si no, emite write_file ya.',
+    '',
+    `Archivo actual (${path}):`,
+    content,
+  ].join('\n');
 }
 
 function normalizeRepoPath(value = '') {
@@ -513,6 +530,8 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     lastFingerprint: '',
     repeatCount: 0,
     lastReadPath: '',
+    lastReadContent: '',
+    readCounts: {},
   };
 
   for (let step = 0; step < MAX_STEPS; step++) {
@@ -552,7 +571,11 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
               return;
             }
 
-            if (looksLikeInternalPlan(answer)) {
+            if (
+              looksLikeInternalPlan(answer)
+              || looksLikeDeferral(answer)
+              || looksLikePendingEdit(answer)
+            ) {
               isPlanBuf = true;
               return;
             }
@@ -689,12 +712,7 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
       modelMessages.push({ role: 'assistant', content: answer });
       modelMessages.push({
         role: 'user',
-        content: [
-          `Ya leiste ${loopState.lastReadPath} y ya identificaste el cambio.`,
-          'No describas el fix.',
-          `Emite ahora un write_file para ${loopState.lastReadPath} con el contenido completo corregido.`,
-          'Si necesitas leer otro archivo auxiliar, hazlo ahora. Si no, escribe el archivo.',
-        ].join(' '),
+        content: buildForcedWritePrompt(loopState),
       });
       continue;
     }
@@ -772,6 +790,16 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
       }
 
       const toolResult = await executeTool(parsed.tool, parsed.args, toolCtx);
+      if (parsed.tool === 'read_file' && parsed.args?.path) {
+        loopState.lastReadContent = toolResult;
+        loopState.readCounts[parsed.args.path] = (loopState.readCounts[parsed.args.path] || 0) + 1;
+
+        if (loopState.readCounts[parsed.args.path] >= 3) {
+          modelMessages.push({ role: 'assistant', content: answer });
+          modelMessages.push({ role: 'user', content: buildForcedWritePrompt(loopState) });
+          continue;
+        }
+      }
       modelMessages.push({ role: 'assistant', content: answer });
       modelMessages.push({ role: 'user', content: `TOOL_RESULT [${parsed.tool}]:\n${toolResult}` });
     }
