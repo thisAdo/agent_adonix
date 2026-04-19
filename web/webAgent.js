@@ -138,6 +138,86 @@ function isLikelyTextFile(file) {
   return TEXT_FILE_EXTENSIONS.has(file.path.slice(dot).toLowerCase());
 }
 
+function normalizeReplyFingerprint(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\p{L}\p{N}./_-]+/gu, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+function getLatestUserPrompt(history) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i];
+    if (item?.role !== 'user') continue;
+    const content = String(item.content || '').trim();
+    if (!content || /^TOOL_RESULT\b/.test(content)) continue;
+    return content;
+  }
+  return '';
+}
+
+function extractMentionedPaths(text, fileTree) {
+  const sample = String(text || '');
+  if (!sample.trim()) return [];
+
+  const found = new Set();
+  const directMatches = sample.match(/(?:[\w.-]+\/)+[\w.-]+\.[\w-]+|[\w.-]+\.[\w-]+/g) || [];
+
+  for (const raw of directMatches) {
+    const token = normalizeRepoPath(raw);
+    if (!token) continue;
+
+    const exact = fileTree.find(file => file.path === token);
+    if (exact) {
+      found.add(exact.path);
+      continue;
+    }
+
+    const bySuffix = fileTree.filter(file => file.path.endsWith(`/${token}`) || file.path === token);
+    for (const file of bySuffix.slice(0, 3)) found.add(file.path);
+  }
+
+  if (found.size) return [...found].slice(0, 3);
+
+  for (const file of fileTree) {
+    const base = file.path.split('/').pop();
+    if (!base) continue;
+    const safe = escapeRegex(base);
+    if (new RegExp(`(^|\\W)${safe}(\\W|$)`, 'i').test(sample)) {
+      found.add(file.path);
+      if (found.size >= 3) break;
+    }
+  }
+
+  return [...found];
+}
+
+function extractSearchPattern(text, fallbackText = '') {
+  const primary = String(text || '');
+  const secondary = String(fallbackText || '');
+
+  const slash = primary.match(/\/([a-z0-9_-]+)/i) || secondary.match(/\/([a-z0-9_-]+)/i);
+  if (slash?.[1]) return slash[1];
+
+  const quoted = primary.match(/["'`](.+?)["'`]/) || secondary.match(/["'`](.+?)["'`]/);
+  if (quoted?.[1]?.trim()) return quoted[1].trim();
+
+  const candidates = `${primary} ${secondary}`
+    .match(/[A-Za-z_][A-Za-z0-9._/-]{2,}/g) || [];
+
+  const stop = new Set([
+    'quiero', 'cuando', 'muestre', 'muestra', 'usuario', 'nombre', 'nombres',
+    'database', 'desde', 'base', 'datos', 'resolver', 'archivo', 'archivos',
+    'comentario', 'continua', 'corrige', 'arregla', 'problema', 'necesito',
+    'puede', 'puedes', 'debe', 'debes', 'hacer', 'haciendo', 'mencion',
+  ]);
+
+  const token = candidates.find(word => !stop.has(word.toLowerCase()));
+  return token || '';
+}
+
 function getFilesByGlob(fileTree, { pattern, path }) {
   const regex = globToRegExp(pattern || '**/*');
   return fileTree
@@ -174,6 +254,48 @@ async function searchTextInRepo(ctx, { pattern, path, glob }) {
   }
 
   return results;
+}
+
+async function attemptAutomaticRecovery(answer, history, ctx, state) {
+  const fingerprint = normalizeReplyFingerprint(answer);
+  const latestUserPrompt = getLatestUserPrompt(history);
+  const mentionedPaths = extractMentionedPaths(answer, ctx.fileTree);
+
+  for (const path of mentionedPaths) {
+    const key = `read:${path}`;
+    if (state.autoActions.has(key)) continue;
+    state.autoActions.add(key);
+    const toolResult = await executeTool('read_file', { path }, ctx);
+    return {
+      assistant: answer,
+      followUps: [{ tool: 'read_file', content: toolResult }],
+    };
+  }
+
+  const pattern = extractSearchPattern(answer, latestUserPrompt);
+  if (pattern) {
+    const key = `search:${pattern.toLowerCase()}`;
+    if (!state.autoActions.has(key)) {
+      state.autoActions.add(key);
+      const toolResult = await executeTool('search_text', {
+        pattern,
+        glob: '**/*.js',
+      }, ctx);
+      return {
+        assistant: answer,
+        followUps: [{ tool: 'search_text', content: toolResult }],
+      };
+    }
+  }
+
+  if (fingerprint && state.lastFingerprint === fingerprint) {
+    state.repeatCount += 1;
+  } else {
+    state.lastFingerprint = fingerprint;
+    state.repeatCount = 1;
+  }
+
+  return null;
 }
 
 async function executeTool(tool, args, ctx) {
@@ -379,6 +501,11 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     fileTree,
     onEvent,
   };
+  const loopState = {
+    autoActions: new Set(),
+    lastFingerprint: '',
+    repeatCount: 0,
+  };
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (isAborted?.()) return;
@@ -479,6 +606,14 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && looksLikeInternalPlan(parsed.content || answer)) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
+      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      if (recovery) {
+        modelMessages.push({ role: 'assistant', content: recovery.assistant });
+        for (const item of recovery.followUps) {
+          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
+        }
+        continue;
+      }
       modelMessages.push({ role: 'assistant', content: answer });
       modelMessages.push({
         role: 'user',
@@ -495,6 +630,14 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && looksLikeDeferral(parsed.content || answer)) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
+      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      if (recovery) {
+        modelMessages.push({ role: 'assistant', content: recovery.assistant });
+        for (const item of recovery.followUps) {
+          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
+        }
+        continue;
+      }
       modelMessages.push({ role: 'assistant', content: answer });
       modelMessages.push({
         role: 'user',
@@ -520,6 +663,28 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
         ].join(' '),
       });
       continue;
+    }
+
+    const fingerprint = normalizeReplyFingerprint(parsed.content || answer);
+    if (fingerprint) {
+      if (loopState.lastFingerprint === fingerprint) {
+        loopState.repeatCount += 1;
+      } else {
+        loopState.lastFingerprint = fingerprint;
+        loopState.repeatCount = 1;
+      }
+    }
+
+    if (parsed.type === 'final' && loopState.repeatCount >= 3) {
+      if (streamStarted) onEvent({ type: 'clear_stream' });
+      const recovery = await attemptAutomaticRecovery(parsed.content || answer, history, toolCtx, loopState);
+      if (recovery) {
+        modelMessages.push({ role: 'assistant', content: recovery.assistant });
+        for (const item of recovery.followUps) {
+          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
+        }
+        continue;
+      }
     }
 
     // ── Final response ──
