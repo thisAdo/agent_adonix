@@ -417,8 +417,8 @@ function ThinkingBlock({ text, elapsed, live, width }) {
   const pulseChar = live ? SPIN_FRAMES[Math.floor(Date.now() / SPIN_MS) % SPIN_FRAMES.length] : '\u25d0';
 
   const label = live
-    ? pulseChar + '  pensando...'
-    : '\u25d0  penso ' + elapsed + 's';
+    ? pulseChar + '  Pensando...'
+    : '\u25d0  Penso ' + elapsed + 's';
 
   return h(Box, { flexDirection: 'column', paddingLeft: 5, marginTop: 1 },
     h(Text, { color: T.textGhost }, label),
@@ -734,7 +734,7 @@ function App({ store, state, onSubmit }) {
 
   const modelKey   = state?.activeModel || DEFAULT_MODEL_KEY;
   const modelLabel = state?.concuerdo
-    ? 'concuerdo · ' + Object.values(MODELS).map(m => m.label).join(', ')
+    ? 'Concuerdo · ' + Object.values(MODELS).map(m => m.label).join(', ')
     : (MODELS[modelKey]?.label || modelKey).toLowerCase();
 
   const handleInput = useCallback((text) => {
