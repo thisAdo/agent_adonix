@@ -322,6 +322,54 @@ function buildForcedWritePrompt(state, conversationMessages, sourceText = '') {
   ].join('\n');
 }
 
+async function runForcedToolPass({ modelKey, toolCtx, loopState, modelMessages, sourceText = '' }) {
+  const targetPath = pickWriteTarget(sourceText, modelMessages, loopState);
+  if (!targetPath) return null;
+
+  const latestUserPrompt = getLatestUserPrompt(modelMessages);
+  const supportPaths = loopState.readOrder
+    .filter(item => item !== targetPath && loopState.readContents[item])
+    .slice(-2);
+
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        'Eres Adonix en modo de recuperacion.',
+        'Debes responder SOLO con un JSON valido de herramienta.',
+        'No des explicaciones, no uses markdown, no escribas texto extra.',
+        'Si ya tienes suficiente contexto para editar, responde con write_file.',
+        'Si aun falta una dependencia exacta, responde con read_file para un solo archivo.',
+      ].join(' '),
+    },
+    {
+      role: 'user',
+      content: [
+        `Peticion original: ${latestUserPrompt}`,
+        sourceText ? `Contexto adicional: ${sourceText}` : '',
+        `Archivo objetivo: ${targetPath}`,
+        `Contenido actual de ${targetPath}:`,
+        loopState.readContents[targetPath] || '',
+        ...supportPaths.flatMap(item => [
+          '',
+          `Archivo auxiliar ${item}:`,
+          loopState.readContents[item],
+        ]),
+        '',
+        'Responde ahora SOLO con JSON de tool call.',
+      ].filter(Boolean).join('\n'),
+    },
+  ];
+
+  try {
+    const result = await chatSilent({ messages, modelKey });
+    const parsed = parseAgentResponse(result.answer || '');
+    return parsed.type === 'tool' ? { parsed, raw: result.answer || '' } : null;
+  } catch {
+    return null;
+  }
+}
+
 function getFilesByGlob(fileTree, { pattern, path }) {
   const regex = globToRegExp(pattern || '**/*');
   return fileTree
@@ -407,6 +455,31 @@ async function readRepoFile(ctx, path) {
     ctx.fileCache.set(path, githubApi.readFile(ctx.token, ctx.owner, ctx.repo, path));
   }
   return ctx.fileCache.get(path);
+}
+
+async function applyToolCall(parsed, answer, toolCtx, loopState, modelMessages) {
+  if (parsed.tool === 'read_file' && parsed.args?.path) {
+    loopState.lastReadPath = parsed.args.path;
+  }
+  if (parsed.tool === 'write_file') {
+    loopState.lastReadPath = parsed.args?.path || loopState.lastReadPath;
+  }
+
+  const toolResult = await executeTool(parsed.tool, parsed.args, toolCtx);
+
+  if (parsed.tool === 'read_file' && parsed.args?.path) {
+    loopState.lastReadContent = toolResult;
+    loopState.readContents[parsed.args.path] = toolResult;
+    if (!loopState.readOrder.includes(parsed.args.path)) {
+      loopState.readOrder.push(parsed.args.path);
+    }
+    loopState.readCounts[parsed.args.path] = (loopState.readCounts[parsed.args.path] || 0) + 1;
+  }
+
+  modelMessages.push({ role: 'assistant', content: answer });
+  modelMessages.push({ role: 'user', content: `TOOL_RESULT [${parsed.tool}]:\n${toolResult}` });
+
+  return { toolResult };
 }
 
 async function executeTool(tool, args, ctx) {
@@ -800,6 +873,18 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && loopState.lastReadPath && looksLikePendingEdit(parsed.content || answer)) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
+      const forced = await runForcedToolPass({
+        modelKey,
+        toolCtx,
+        loopState,
+        modelMessages,
+        sourceText: `${thinkingContent}\n${parsed.content || answer}`.trim(),
+      });
+      if (forced) {
+        await applyToolCall(forced.parsed, forced.raw, toolCtx, loopState, modelMessages);
+        loopState.repeatCount = 0;
+        continue;
+      }
       modelMessages.push({ role: 'assistant', content: answer });
       modelMessages.push({
         role: 'user',
@@ -835,6 +920,18 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
 
     if (parsed.type === 'final' && loopState.repeatCount >= 3) {
       if (streamStarted) onEvent({ type: 'clear_stream' });
+      const forced = await runForcedToolPass({
+        modelKey,
+        toolCtx,
+        loopState,
+        modelMessages,
+        sourceText: `${thinkingContent}\n${parsed.content || answer}`.trim(),
+      });
+      if (forced) {
+        await applyToolCall(forced.parsed, forced.raw, toolCtx, loopState, modelMessages);
+        loopState.repeatCount = 0;
+        continue;
+      }
       const recovery = await attemptAutomaticRecovery(
         `${thinkingContent}\n${parsed.content || answer}`.trim(),
         modelMessages,
@@ -872,34 +969,29 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     // ── Tool call ──
     if (parsed.type === 'tool') {
       if (streamStarted) onEvent({ type: 'clear_stream' });
-
-      if (parsed.tool === 'read_file' && parsed.args?.path) {
-        loopState.lastReadPath = parsed.args.path;
-      }
-      if (parsed.tool === 'write_file') {
-        loopState.lastReadPath = parsed.args?.path || loopState.lastReadPath;
-      }
-
-      const toolResult = await executeTool(parsed.tool, parsed.args, toolCtx);
-      if (parsed.tool === 'read_file' && parsed.args?.path) {
-        loopState.lastReadContent = toolResult;
-        loopState.readContents[parsed.args.path] = toolResult;
-        if (!loopState.readOrder.includes(parsed.args.path)) {
-          loopState.readOrder.push(parsed.args.path);
-        }
-        loopState.readCounts[parsed.args.path] = (loopState.readCounts[parsed.args.path] || 0) + 1;
-
-        if (loopState.readCounts[parsed.args.path] >= 3) {
-          modelMessages.push({ role: 'assistant', content: answer });
-          modelMessages.push({
-            role: 'user',
-            content: buildForcedWritePrompt(loopState, modelMessages, `${thinkingContent}\n${answer}`.trim()),
-          });
+      await applyToolCall(parsed, answer, toolCtx, loopState, modelMessages);
+      if (
+        parsed.tool === 'read_file'
+        && parsed.args?.path
+        && loopState.readCounts[parsed.args.path] >= 3
+      ) {
+        const forced = await runForcedToolPass({
+          modelKey,
+          toolCtx,
+          loopState,
+          modelMessages,
+          sourceText: `${thinkingContent}\n${answer}`.trim(),
+        });
+        if (forced) {
+          await applyToolCall(forced.parsed, forced.raw, toolCtx, loopState, modelMessages);
+          loopState.repeatCount = 0;
           continue;
         }
+        modelMessages.push({
+          role: 'user',
+          content: buildForcedWritePrompt(loopState, modelMessages, `${thinkingContent}\n${answer}`.trim()),
+        });
       }
-      modelMessages.push({ role: 'assistant', content: answer });
-      modelMessages.push({ role: 'user', content: `TOOL_RESULT [${parsed.tool}]:\n${toolResult}` });
     }
   }
 
