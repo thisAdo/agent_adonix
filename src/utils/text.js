@@ -31,8 +31,6 @@ function normalizeText(value) {
     trimmed = trimmed.slice(1, -1).trim();
   }
 
-  trimmed = trimmed.replace(/\\([_*\[\](){}#+\-.!|~>])/g, '$1');
-
   return trimmed;
 }
 

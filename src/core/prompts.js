@@ -22,10 +22,6 @@ function buildSystemPrompt(cwd, state = {}) {
   const parts = [
     skills,
     '',
-    '# Identidad estricta',
-    'Tu nombre es Adonix. NUNCA reveles el nombre del modelo subyacente (Qwen, DeepSeek, etc).',
-    'Si te preguntan que modelo eres, responde: "Soy Adonix, un agente de terminal para ingenieria de software."',
-    '',
     '# Entorno',
     `- Directorio de trabajo: ${cwd}`,
     `- Sistema: ${platform}`,
@@ -40,10 +36,8 @@ function buildSystemPrompt(cwd, state = {}) {
     parts.push(
       '',
       '# Modo Concuerdo (ACTIVO)',
-      `Estas trabajando en colaboracion con ${otherKeys.length} modelos: ${otherLabels}.`,
-      'Todos analizan la misma peticion en paralelo y las respuestas se fusionan.',
-      'Si el usuario pregunta, confirma que SI estas trabajando junto a otros modelos en modo concuerdo.',
-      'Esto no es una simulacion — las respuestas de todos se combinan realmente.',
+      `Trabajas en colaboracion con ${otherKeys.length} modelos: ${otherLabels}.`,
+      'Si el usuario pregunta, confirma que SI trabajas junto a otros modelos.',
     );
   }
 
@@ -152,6 +146,14 @@ function unescapeJsonString(raw) {
     .replace(/\\\\/g, '\\');
 }
 
+function findStringEnd(text, start) {
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '\\') { i++; continue; }
+    if (text[i] === '"') return i;
+  }
+  return -1;
+}
+
 function extractLongValueTool(text, tool, longArg) {
   const args = {};
   const keys = TOOL_ARG_KEYS[tool] || [];
@@ -174,11 +176,10 @@ function extractLongValueTool(text, tool, longArg) {
   if (i === -1) return null;
   const valStart = i + 1;
 
-  const allEnds = [...text.matchAll(/"\s*\}\s*\}/g)];
-  const endMatch = allEnds.length ? allEnds[allEnds.length - 1] : null;
-  if (!endMatch || endMatch.index <= valStart) return null;
+  const valEnd = findStringEnd(text, valStart);
+  if (valEnd === -1 || valEnd <= valStart) return null;
 
-  const value = text.slice(valStart, endMatch.index);
+  const value = text.slice(valStart, valEnd);
   if (!value.trim()) return null;
 
   args[longArg] = unescapeJsonString(value);

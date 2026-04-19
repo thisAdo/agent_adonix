@@ -30,8 +30,8 @@ function loadAllSkills() {
     });
 }
 
-function buildSkillsPrompt(extraSkills = []) {
-  const names = loadAllSkills();
+function buildSkillsPrompt({ include, extraSkills = [] } = {}) {
+  const names = include || loadAllSkills();
   const parts = [];
 
   for (const name of names) {

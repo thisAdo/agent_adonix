@@ -40,6 +40,13 @@ write_file { path, content }
   Crea archivo nuevo o sobrescribe existente. Crea directorios padre automaticamente.
   PELIGROSO: sobrescribe sin preguntar. Verifica que el path es correcto.
   Usa para: crear archivos nuevos, reescribir archivos pequenos completamente.
+  CRITICO — preserva TODOS los caracteres del codigo fuente:
+  - Template literals con backtick: `texto ${variable}` (el backtick es literal en JSON)
+  - Operadores aritmeticos: *, +, -, /, %, **
+  - Operadores logicos: &&, ||, !, ??
+  - Regex: /patron/flags
+  - Caracteres especiales: ~, ^, |, &
+  - NUNCA omitas, simplifiques ni resumas caracteres del codigo
   Ejemplo: {"type":"tool","tool":"write_file","args":{"path":"src/utils.js","content":"const add = (a, b) => a + b;\nmodule.exports = { add };"}}
 
 append_file { path, content }
