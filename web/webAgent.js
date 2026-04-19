@@ -7,14 +7,14 @@ const store = require('./store');
 
 const MAX_STEPS = 15;
 const CONCUERDO_TIMEOUT = 30000;
-const BUFFER_CHECK = 12;
+const BUFFER_CHECK = 72;
 const WEB_SKILLS = ['core', 'web-agent', 'code-style', 'reasoning', 'methodology'];
 const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i;
 const XML_TOOL_RE = /<invoke\s+name=|<\w+:tool_call>/i;
-const INTERNAL_PLAN_START_RE = /^(el usuario|necesito|primero|voy a|debo|tengo que|para hacer esto|mi siguiente paso|entendido|dejame|déjame)\b/i;
-const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|leer primero|editar el archivo|modificar el archivo|hacer el cambio|quitar el comentario|analizar|inspeccionar|usar la herramienta|ver el archivo|continuar|resolver)/i;
-const DEFERAL_RE = /(¿(quieres|necesitas|prefieres).*(vea|revise|aplique|cambie|lea)|si (quieres|necesitas) puedo|puedo ver el codigo exacto|puedo revisar el archivo exacto|voy a leer (ambos|estos|esos) archivos)/i;
-const PENDING_EDIT_RE = /(perfecto, ya tengo todo el codigo|veo el problema|el problema esta en|esto muestra|voy a (agregar|cambiar|modificar|reemplazar|quitar|usar|incorporar|corregir)|necesito (cambiar|modificar|agregar|quitar|usar|corregir)|aqui esta el archivo corregido|lo que necesito cambiar|debo cambiar|tengo que cambiar|voy a aplicar el fix|voy a incorporar|getname del resolver|corregir la logica)/i;
+const INTERNAL_PLAN_START_RE = /^(el usuario|the user|necesito|i need|primero|first|voy a|i will|debo|i should|tengo que|let me|para hacer esto|to do this|mi siguiente paso|my next step|entendido|okay|ok|perfecto|now|ahora)\b/i;
+const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|read the file|leer primero|read it first|editar el archivo|edit the file|modificar el archivo|hacer el cambio|quitar el comentario|analizar|analyze|inspeccionar|inspect|usar la herramienta|use the tool|ver el archivo|continuar|continue|resolver|fix the issue|importar|getname|corregir)/i;
+const DEFERAL_RE = /(¿(quieres|necesitas|prefieres).*(vea|revise|aplique|cambie|lea)|si (quieres|necesitas) puedo|puedo ver el codigo exacto|puedo revisar el archivo exacto|voy a leer (ambos|estos|esos) archivos|do you want me to|would you like me to|i can check the exact file|let me read the file first)/i;
+const PENDING_EDIT_RE = /(perfecto, ya tengo todo el codigo|now i can see the full code|veo el problema|i see the problem|el problema esta en|the problem is in|esto muestra|this shows|voy a (agregar|cambiar|modificar|reemplazar|quitar|usar|incorporar|corregir)|i will (add|change|modify|replace|remove|use|fix)|necesito (cambiar|modificar|agregar|quitar|usar|corregir)|i need to (change|modify|add|remove|use|fix)|aqui esta el archivo corregido|here is the corrected file|lo que necesito cambiar|debo cambiar|tengo que cambiar|voy a aplicar el fix|i'm going to apply the fix|voy a incorporar|getname del resolver|corregir la logica)/i;
 const TEXT_FILE_EXTENSIONS = new Set([
   '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
   '.html', '.css', '.scss', '.sass', '.less', '.yml', '.yaml', '.xml',
@@ -62,6 +62,13 @@ function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
   return parts.join('\n');
 }
 
+function normalizeClassifierText(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+}
+
 function looksLikeToolPayload(text) {
   const sample = text.trimStart().slice(0, 240);
   if (!sample) return false;
@@ -74,20 +81,20 @@ function looksLikeToolPayload(text) {
 }
 
 function looksLikeInternalPlan(text) {
-  const sample = String(text || '').trimStart().slice(0, 320);
+  const sample = normalizeClassifierText(String(text || '').trimStart().slice(0, 400));
   if (!sample || looksLikeToolPayload(sample)) return false;
 
   return INTERNAL_PLAN_START_RE.test(sample) && INTERNAL_PLAN_ACTION_RE.test(sample);
 }
 
 function looksLikeDeferral(text) {
-  const sample = String(text || '').trimStart().slice(0, 320);
+  const sample = normalizeClassifierText(String(text || '').trimStart().slice(0, 400));
   if (!sample || looksLikeToolPayload(sample)) return false;
   return DEFERAL_RE.test(sample);
 }
 
 function looksLikePendingEdit(text) {
-  const sample = String(text || '').trimStart().slice(0, 600);
+  const sample = normalizeClassifierText(String(text || '').trimStart().slice(0, 700));
   if (!sample || looksLikeToolPayload(sample)) return false;
   return PENDING_EDIT_RE.test(sample);
 }
