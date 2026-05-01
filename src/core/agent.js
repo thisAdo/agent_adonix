@@ -53,18 +53,15 @@ async function requestModel(messages, state, ui, options = {}) {
             ui.writeThinkingDelta(state, delta);
             return;
           }
-
           if (thinkingStarted) {
             ui.endThinkingStream(state);
             thinkingStarted = false;
           }
-
           if (streamOutput && !answerStarted) {
             stopThinking();
             ui.beginAssistantStream(state);
             answerStarted = true;
           }
-
           if (streamOutput) {
             ui.writeAssistantDelta(state, delta);
           }
@@ -91,7 +88,6 @@ async function summarizeMessages(state, ui, messages) {
   const transcript = messages
     .map(message => `${message.role.toUpperCase()}:\n${message.content}`)
     .join('\n\n');
-
   const prompt = [
     {
       role: 'system',
@@ -111,7 +107,6 @@ async function summarizeMessages(state, ui, messages) {
       ].join('\n'),
     },
   ];
-
   return normalizeText(await requestModel(prompt, state, ui, {
     label: 'Compactando memoria',
   }));
@@ -121,16 +116,13 @@ async function compactHistoryIfNeeded(state, ui) {
   if (estimateHistoryChars(state.history) <= MAX_HISTORY_CHARS) {
     return;
   }
-
   if (state.history.length <= KEEP_RECENT_MESSAGES) {
     return;
   }
-
   const splitIndex = Math.max(2, state.history.length - KEEP_RECENT_MESSAGES);
   const oldMessages = state.history.slice(0, splitIndex);
   const recentMessages = state.history.slice(splitIndex);
   const summary = await summarizeMessages(state, ui, oldMessages);
-
   state.memorySummary = summary;
   state.history = recentMessages;
   ui.logEvent(state, 'info', 'Memoria compactada', shortText(summary, 100));
@@ -175,7 +167,6 @@ async function answerFromToolResult(input, call, result, state, ui) {
       ].join('\n'),
     },
   ];
-
   const output = await requestModel(messages, state, ui, {
     label: 'Resumiendo resultado',
     streamOutput: true,
@@ -269,35 +260,29 @@ async function runAgentTurn(input, state, ui) {
       const settled = await Promise.allSettled(secondaryResults.map(s => s.promise));
       const extras = [];
       let toolSuggestions = [];
-
       for (let i = 0; i < settled.length; i++) {
         const val = settled[i].status === 'fulfilled' ? settled[i].value : null;
         const label = MODELS[secondaryResults[i].key]?.label || secondaryResults[i].key;
-
         if (!val?.answer) {
-          ui.logEvent(state, 'info', `⏳ ${label} — sin respuesta`);
+          ui.logEvent(state, 'info', `  ${label}   sin respuesta`);
           continue;
         }
-
         const altParsed = parseAgentResponse(val.answer);
-
         if (altParsed.type === 'tool') {
           toolSuggestions.push({ parsed: altParsed, label });
-          ui.logEvent(state, 'info', `🔧 ${label} sugiere ${altParsed.tool}`);
+          ui.logEvent(state, 'info', `  ${label} sugiere ${altParsed.tool}`);
         } else if (altParsed.type === 'final' && altParsed.content?.trim()) {
           extras.push({ content: altParsed.content, label });
-          ui.logEvent(state, 'info', `✓ ${label} respondió`);
+          ui.logEvent(state, 'info', `  ${label} respondio final`);
         }
       }
 
       if (parsed.type === 'final' && toolSuggestions.length >= 2) {
         parsed = toolSuggestions[0].parsed;
-        ui.logEvent(state, 'info', `🤝 ${toolSuggestions.length} modelos concuerdan: ${parsed.tool}`);
+        ui.logEvent(state, 'info', `  ${toolSuggestions.length} modelos concuerdan: ${parsed.tool}`);
       } else if (parsed.type === 'final' && extras.length > 0) {
-        // Sintetizar todas las perspectivas en UNA sola respuesta
         const activeLabel = MODELS[state.activeModel || DEFAULT_MODEL_KEY]?.label || 'Primario';
-        ui.logEvent(state, 'info', `🤝 Sintetizando: ${[activeLabel, ...extras.map(e => e.label)].join(' + ')}`);
-
+        ui.logEvent(state, 'info', `  Sintetizando: ${[activeLabel, ...extras.map(e => e.label)].join(' + ')}`);
         const synthMessages = [
           {
             role: 'system',
@@ -309,7 +294,7 @@ async function runAgentTurn(input, state, ui) {
               '- Integra las perspectivas unicas de cada uno naturalmente',
               '- Si todos dicen lo mismo, da UNA respuesta limpia sin redundancia',
               '- Se directo y conciso',
-              '- Responde en español',
+              '- Responde en espa ol',
               '- NO menciones que estas sintetizando ni que hay multiples modelos',
               '- NO uses separadores --- ni secciones por modelo',
               '- Responde como si fueras un solo agente dando la mejor respuesta posible',
@@ -326,28 +311,42 @@ async function runAgentTurn(input, state, ui) {
             ].join('\n'),
           },
         ];
-
         try {
           const synthesis = await requestModel(synthMessages, state, ui, {
-            label: 'Concuerdo — unificando',
+            label: 'Concuerdo   unificando',
           });
           if (synthesis?.trim()) {
             parsed = { type: 'final', content: synthesis.trim() };
-            ui.logEvent(state, 'info', '🤝 Respuesta unificada lista');
+            ui.logEvent(state, 'info', '  Respuesta unificada lista');
           }
         } catch {
-          // Si falla la sintesis, usar respuesta primaria tal cual
+          // Fallback a respuesta primaria
         }
       } else if (parsed.type === 'tool' && toolSuggestions.length > 0) {
         const matching = toolSuggestions.filter(t => t.parsed.tool === parsed.tool);
         if (matching.length > 0) {
-          ui.logEvent(state, 'info', `🤝 ${matching.length + 1} modelos concuerdan: ${parsed.tool}`);
+          ui.logEvent(state, 'info', `  ${matching.length + 1} modelos concuerdan: ${parsed.tool}`);
         }
       }
     }
 
     if (parsed.type === 'final') {
       const content = parsed.content.trim();
+      
+      // AUTO-CORRECCIÓN: Anti-Lazy / Anti-Deferral Check
+      const lazyRegex = /(ahora voy a|procederé a|el siguiente paso es|falta|quedaría) (editar|modificar|crear|escribir|actualizar|revisar) (el|otro) (archivo|documento|código)/i;
+      const waitingRegex = /(quieres que|te gustaría que|sigo con|debo continuar|necesitas que) (el siguiente|otro|el archivo|con|lo haga)/i;
+      
+      if (lazyRegex.test(content) || waitingRegex.test(content)) {
+        ui.logEvent(state, 'warn', 'Auto-Corrección', 'Agente intentó pausar. Forzando continuación...');
+        turnMessages.push({ role: 'assistant', content });
+        turnMessages.push({ 
+          role: 'user', 
+          content: "No te detengas ni pidas permiso. Ejecuta la herramienta para el siguiente archivo inmediatamente. Completa toda la tarea antes de responder. Devuelve SOLO el JSON de la herramienta." 
+        });
+        continue;
+      }
+
       turnMessages.push({ role: 'assistant', content: content || raw.trim() });
       state.history.push(...turnMessages);
       await appendTranscriptEntry(state.sessionId, {
@@ -369,7 +368,7 @@ async function runAgentTurn(input, state, ui) {
         ui.logEvent(state, 'warn', 'Loop detectado', `${parsed.tool} repetido ${repeatCount + 1}x`);
         turnMessages.push({
           role: 'user',
-          content: 'ATENCION: Estas repitiendo la misma operacion. La operacion anterior ya fue exitosa. Responde con type=final confirmando lo que hiciste.',
+          content: 'ATENCION: Estas repitiendo la misma operacion. La operacion anterior ya fue exitosa. Si ya terminaste, responde con type=final confirmando lo que hiciste. Si no, usa otra estrategia.',
         });
         continue;
       }
@@ -401,7 +400,7 @@ async function runAgentTurn(input, state, ui) {
       });
       turnMessages.push({
         role: 'user',
-        content: `TOOL_RESULT\n${buildToolResultMessage(parsed, result)}`,
+        content: `TOOL_RESULT\n${buildToolResultMessage(parsed, result)}\n\n(Si necesitas editar otro archivo o aplicar más cambios, hazlo AHORA. No uses type=final hasta terminar Todo.)`,
       });
     } catch (err) {
       ui.logEvent(state, 'error', 'Fallo de herramienta', err.message);
@@ -418,9 +417,7 @@ async function runAgentTurn(input, state, ui) {
     }
   }
 
-  const fallback =
-    'No pude completar la tarea dentro del limite de herramientas. Intenta dividirla.';
-
+  const fallback = 'No pude completar la tarea dentro del limite de herramientas. Intenta dividirla.';
   turnMessages.push({
     role: 'assistant',
     content: fallback,
