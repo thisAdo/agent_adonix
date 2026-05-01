@@ -5,17 +5,21 @@ const { DEFAULT_MODEL_KEY, MODELS } = require('../src/config');
 const githubApi = require('./githubApi');
 const store = require('./store');
 
-const MAX_STEPS = 15;
+const MAX_STEPS = 30; // Incrementado para tareas complejas
 const CONCUERDO_TIMEOUT = 30000;
 const BUFFER_CHECK = 72;
 const WEB_SKILLS = ['core', 'web-agent', 'code-style', 'reasoning', 'methodology'];
+
 const TOOL_HINT_RE = /"tool"\s*:\s*"(list_dir|read_file|search_text|glob_files|file_info|write_file|append_file|replace_in_file|run_command|make_dir|fetch_url|web_search|web_read)"/i;
 const XML_TOOL_RE = /<invoke\s+name=|<\w+:tool_call>/i;
 const INTERNAL_PLAN_START_RE = /^(el usuario|the user|necesito|i need|primero|first|voy a|i will|debo|i should|tengo que|let me|para hacer esto|to do this|mi siguiente paso|my next step|entendido|okay|ok|perfecto|now|ahora)\b/i;
 const INTERNAL_PLAN_ACTION_RE = /(read_file|write_file|leer el archivo|read the file|leer primero|read it first|editar el archivo|edit the file|modificar el archivo|hacer el cambio|quitar el comentario|analizar|analyze|inspeccionar|inspect|usar la herramienta|use the tool|ver el archivo|continuar|continue|resolver|fix the issue|importar|getname|corregir)/i;
-const DEFERAL_RE = /(¿(quieres|necesitas|prefieres).*(vea|revise|aplique|cambie|lea)|si (quieres|necesitas) puedo|puedo ver el codigo exacto|puedo revisar el archivo exacto|voy a leer (ambos|estos|esos) archivos|do you want me to|would you like me to|i can check the exact file|let me read the file first)/i;
-const PENDING_EDIT_RE = /(perfecto, ya tengo todo el codigo|now i can see the full code|veo el problema|i see the problem|el problema esta en|the problem is in|esto muestra|this shows|voy a (agregar|cambiar|modificar|reemplazar|quitar|usar|incorporar|corregir|escribir|aplicar)|i will (add|change|modify|replace|remove|use|fix|write|apply)|necesito (cambiar|modificar|agregar|quitar|usar|corregir|ver|leer)|i need to (change|modify|add|remove|use|fix|see|read)|aqui esta el archivo corregido|here is the corrected file|lo que necesito cambiar|debo cambiar|tengo que cambiar|voy a aplicar el fix|i'm going to apply the fix|voy a incorporar|getname del resolver|corregir la logica|ya tengo|ahora veo|ah, ?getname|ah ya|necesito ver|voy a leer|voy a escribir|archivo corregido|el fix es|la solucion es)/i;
-const USER_WRITE_INTENT_RE = /(agrega|añade|anade|pon(?:er|e|lo|la)?|importa|corrige|arregla|edita|cambia|quita|elimina|reemplaza|modifica|actualiza|sube|commit|aplica|termina|soluciona|hazlo|fix|add|change|edit|replace|import|modify|update|remove|apply)/i;
+
+// REGLAS ANTI-PEREZA AGRESIVAS
+const DEFERAL_RE = /(quieres que|necesitas que|puedo|si quieres|te gustaría).*(edite|continue|vea|revise|aplique|cambie|haga|lea|do you want me to|would you like me to|i can check the exact file|let me read the file first)/i;
+const PENDING_EDIT_RE = /(voy a (agregar|cambiar|modificar|reemplazar|actualizar|escribir|quitar|usar|incorporar|corregir|aplicar)|i will (add|change|modify|replace|remove|use|fix|write|apply)|el siguiente paso es|ahora toca|debo editar|tengo que modificar|procederé a|necesito (cambiar|modificar|agregar|quitar|usar|corregir|ver|leer)|i need to (change|modify|add|remove|use|fix|see|read))/i;
+const USER_WRITE_INTENT_RE = /(agrega|añade|pon(?:er|e|lo|la)?|importa|corrige|arregla|edita|cambia|quita|elimina|reemplaza|modifica|actualiza|sube|commit|aplica|termina|soluciona|hazlo|fix|add|change|edit|replace|import|modify|update|remove|apply)/i;
+
 const TEXT_FILE_EXTENSIONS = new Set([
   '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
   '.html', '.css', '.scss', '.sass', '.less', '.yml', '.yaml', '.xml',
@@ -38,11 +42,11 @@ function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
     `Repositorio: ${repoOwner}/${repoName}`,
     `Fecha: ${new Date().toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric' })}`,
     '',
-    '# Reglas de autonomia',
-    '- Si el usuario pide un cambio, debes hacerlo de punta a punta.',
-    '- Si el usuario dice "continua", debes seguir trabajando.',
+    '# Reglas de autonomía CRÍTICAS',
+    '- NUNCA pidas permiso para continuar. Si tienes que editar 5 archivos, haz 5 llamadas a herramientas consecutivas.',
+    '- NO uses type=final si aún faltan archivos por procesar o código por corregir.',
+    '- Si el usuario te pide un cambio, hazlo de punta a punta de forma silenciosa e independiente.',
     '- Si no sabes el archivo exacto, usa search_text, glob_files o list_dir.',
-    '- No preguntes "quieres que..." ni "necesitas que..." si puedes investigarlo tu.',
     '',
     'Archivos del repositorio:',
     treeLines,
@@ -59,7 +63,6 @@ function buildSystemPrompt(repoOwner, repoName, fileTree, state = {}) {
       'Si el usuario pregunta, confirma que trabajas en equipo con otros modelos.',
     );
   }
-
   return parts.join('\n');
 }
 
@@ -73,7 +76,6 @@ function normalizeClassifierText(text) {
 function looksLikeToolPayload(text) {
   const sample = text.trimStart().slice(0, 240);
   if (!sample) return false;
-
   return /^\{/.test(sample)
     || XML_TOOL_RE.test(sample)
     || /^```(?:json)?/i.test(sample)
@@ -84,7 +86,6 @@ function looksLikeToolPayload(text) {
 function looksLikeInternalPlan(text) {
   const sample = normalizeClassifierText(String(text || '').trimStart().slice(0, 400));
   if (!sample || looksLikeToolPayload(sample)) return false;
-
   return INTERNAL_PLAN_START_RE.test(sample) && INTERNAL_PLAN_ACTION_RE.test(sample);
 }
 
@@ -100,23 +101,6 @@ function looksLikePendingEdit(text) {
   return PENDING_EDIT_RE.test(sample);
 }
 
-function buildForcedWritePrompt(state) {
-  const path = state.lastReadPath || 'archivo-leido';
-  const content = state.lastReadContent || '';
-
-  return [
-    `Ya leiste ${path} y ya identificaste el cambio.`,
-    'No describas el fix.',
-    'Responde AHORA SOLO con un JSON valido de write_file.',
-    `El path debe ser exactamente "${path}".`,
-    'El campo content debe incluir el archivo COMPLETO ya corregido.',
-    'Si de verdad necesitas otro archivo auxiliar, usa read_file para ese archivo. Si no, emite write_file ya.',
-    '',
-    `Archivo actual (${path}):`,
-    content,
-  ].join('\n');
-}
-
 function normalizeRepoPath(value = '') {
   return String(value).replace(/^\.?\//, '').replace(/\/+$/, '').trim();
 }
@@ -128,31 +112,25 @@ function escapeRegex(text) {
 function globToRegExp(pattern = '') {
   const normalized = normalizeRepoPath(pattern);
   if (!normalized) return /^.*$/;
-
   let source = '^';
   for (let i = 0; i < normalized.length; i++) {
     const ch = normalized[i];
     const next = normalized[i + 1];
-
     if (ch === '*' && next === '*') {
       source += '.*';
       i++;
       continue;
     }
-
     if (ch === '*') {
       source += '[^/]*';
       continue;
     }
-
     if (ch === '?') {
       source += '.';
       continue;
     }
-
     source += escapeRegex(ch);
   }
-
   source += '$';
   return new RegExp(source, 'i');
 }
@@ -193,24 +171,19 @@ function getLatestUserPrompt(history) {
 function extractMentionedPaths(text, fileTree) {
   const sample = String(text || '');
   if (!sample.trim()) return [];
-
   const found = new Set();
   const directMatches = sample.match(/(?:[\w.-]+\/)+[\w.-]+\.[\w-]+|[\w.-]+\.[\w-]+/g) || [];
-
   for (const raw of directMatches) {
     const token = normalizeRepoPath(raw);
     if (!token) continue;
-
     const exact = fileTree.find(file => file.path === token);
     if (exact) {
       found.add(exact.path);
       continue;
     }
-
     const bySuffix = fileTree.filter(file => file.path.endsWith(`/${token}`) || file.path === token);
     for (const file of bySuffix.slice(0, 3)) found.add(file.path);
   }
-
   if (found.size) return [...found].slice(0, 3);
 
   for (const file of fileTree) {
@@ -222,30 +195,25 @@ function extractMentionedPaths(text, fileTree) {
       if (found.size >= 3) break;
     }
   }
-
   return [...found];
 }
 
 function extractSearchPattern(text, fallbackText = '') {
   const primary = String(text || '');
   const secondary = String(fallbackText || '');
-
   const slash = primary.match(/\/([a-z0-9_-]+)/i) || secondary.match(/\/([a-z0-9_-]+)/i);
   if (slash?.[1]) return slash[1];
-
   const quoted = primary.match(/["'`](.+?)["'`]/) || secondary.match(/["'`](.+?)["'`]/);
   if (quoted?.[1]?.trim()) return quoted[1].trim();
 
   const candidates = `${primary} ${secondary}`
     .match(/[A-Za-z_][A-Za-z0-9._/-]{2,}/g) || [];
-
   const stop = new Set([
     'quiero', 'cuando', 'muestre', 'muestra', 'usuario', 'nombre', 'nombres',
     'database', 'desde', 'base', 'datos', 'resolver', 'archivo', 'archivos',
     'comentario', 'continua', 'corrige', 'arregla', 'problema', 'necesito',
     'puede', 'puedes', 'debe', 'debes', 'hacer', 'haciendo', 'mencion',
   ]);
-
   const token = candidates.find(word => !stop.has(word.toLowerCase()));
   return token || '';
 }
@@ -260,7 +228,6 @@ function getEditTargetScore(path, sourceText = '', latestUserPrompt = '') {
   if (filename && source.includes(filename)) score += 10;
   if (basenameNoExt && source.includes(basenameNoExt)) score += 5;
   if (lowerPath && source.includes(lowerPath)) score += 12;
-
   if (/\.(js|ts|jsx|tsx|py|go|java|php|rb)$/.test(lowerPath)) score += 2;
   if (/^(comandos|commands|cmds|src\/commands|plugins)\//.test(lowerPath)) score += 4;
   if (/^(core|utils|lib|helpers)\//.test(lowerPath)) score += 1;
@@ -278,14 +245,12 @@ function pickWriteTarget(sourceText, conversationMessages, state) {
     ...extractMentionedPaths(sourceText, state.fileTree),
     ...extractMentionedPaths(latestUserPrompt, state.fileTree),
   ];
-
   for (const path of mentioned) {
     if (state.readContents[path]) return path;
   }
 
   let bestPath = available[0];
   let bestScore = -Infinity;
-
   for (const path of available) {
     const score = getEditTargetScore(path, sourceText, latestUserPrompt);
     if (score > bestScore) {
@@ -293,7 +258,6 @@ function pickWriteTarget(sourceText, conversationMessages, state) {
       bestPath = path;
     }
   }
-
   return bestPath;
 }
 
@@ -397,7 +361,6 @@ async function searchTextInRepo(ctx, { pattern, path, glob }) {
     try {
       const current = await readRepoFile(ctx, file.path);
       const lines = current.content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-
       for (let i = 0; i < lines.length; i++) {
         if (!lines[i].toLowerCase().includes(needle)) continue;
         results.push(`${file.path}:${i + 1}: ${lines[i].trim()}`);
@@ -405,15 +368,14 @@ async function searchTextInRepo(ctx, { pattern, path, glob }) {
       }
     } catch {}
   }
-
   return results;
 }
 
 async function attemptAutomaticRecovery(sourceText, conversationMessages, ctx, state) {
   const fingerprint = normalizeReplyFingerprint(sourceText);
   const latestUserPrompt = getLatestUserPrompt(conversationMessages);
-  const mentionedPaths = extractMentionedPaths(sourceText, ctx.fileTree);
 
+  const mentionedPaths = extractMentionedPaths(sourceText, ctx.fileTree);
   for (const path of mentionedPaths) {
     const key = `read:${path}`;
     if (state.autoActions.has(key)) continue;
@@ -447,7 +409,6 @@ async function attemptAutomaticRecovery(sourceText, conversationMessages, ctx, s
     state.lastFingerprint = fingerprint;
     state.repeatCount = 1;
   }
-
   return null;
 }
 
@@ -477,21 +438,18 @@ async function applyToolCall(parsed, answer, toolCtx, loopState, modelMessages) 
     loopState.readCounts[parsed.args.path] = (loopState.readCounts[parsed.args.path] || 0) + 1;
     loopState.totalReads = (loopState.totalReads || 0) + 1;
   }
-
   if (parsed.tool === 'write_file') {
     loopState.writesDone = (loopState.writesDone || 0) + 1;
     loopState.totalReads = 0;
   }
 
   modelMessages.push({ role: 'assistant', content: answer });
-  modelMessages.push({ role: 'user', content: `TOOL_RESULT [${parsed.tool}]:\n${toolResult}` });
-
+  modelMessages.push({ role: 'user', content: `TOOL_RESULT [${parsed.tool}]:\n${toolResult}\n\n(Si necesitas editar otro archivo, hazlo AHORA. No uses type=final hasta terminar Todo.)` });
   return { toolResult };
 }
 
 async function executeTool(tool, args, ctx) {
   ctx.onEvent({ type: 'tool', name: tool, path: args.path || args.query || '' });
-
   try {
     switch (tool) {
       case 'read_file': {
@@ -512,13 +470,13 @@ async function executeTool(tool, args, ctx) {
           args.path,
           args.content,
           {
-          name: ctx.authorName,
-          email: ctx.email,
+            name: ctx.authorName,
+            email: ctx.email,
           },
         );
         const shortSha = writeResult.commitSha.slice(0, 7);
         const commitLabel = shortSha
-          ? `${writeResult.commitMessage} · ${shortSha}`
+          ? `${writeResult.commitMessage}   ${shortSha}`
           : writeResult.commitMessage;
         ctx.onEvent({
           type: 'tool_done',
@@ -604,7 +562,6 @@ async function runConcuerdo(primaryContent, primaryKey, modelMessages, onEvent, 
     if (isAborted?.()) return null;
     const val = results[i].status === 'fulfilled' ? results[i].value : null;
     const label = MODELS[otherKeys[i]]?.label || otherKeys[i];
-
     if (val?.answer?.trim()) {
       const altParsed = parseAgentResponse(val.answer);
       if (altParsed.type === 'final' && altParsed.content?.trim()) {
@@ -622,6 +579,7 @@ async function runConcuerdo(primaryContent, primaryKey, modelMessages, onEvent, 
 
   onEvent({ type: 'synth_start' });
   const primaryLabel = MODELS[primaryKey]?.label || primaryKey;
+
   const synthMessages = [
     {
       role: 'system',
@@ -660,8 +618,8 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
   const { repoOwner, repoName, messages: history } = chatData;
   const modelKey = chatData.activeModel || DEFAULT_MODEL_KEY;
   const concuerdo = chatData.concuerdo || false;
-
   const modelLabel = MODELS[modelKey]?.label || modelKey;
+
   onEvent({ type: 'model_info', model: modelKey, label: modelLabel, concuerdo });
 
   let fileTree = [];
@@ -693,6 +651,7 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
     fileCache: new Map(),
     onEvent,
   };
+
   const userLatest = [...history].reverse().find(m => m.role === 'user')?.content || '';
   const userWantsEdit = USER_WRITE_INTENT_RE.test(normalizeClassifierText(userLatest));
 
@@ -728,7 +687,6 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
         modelKey,
         onChunk: (delta, phase) => {
           if (isAborted?.()) return;
-
           if (phase === 'thinking') {
             if (!thinkStarted) {
               thinkStarted = true;
@@ -739,15 +697,12 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
             onEvent({ type: 'thinking_delta', content: delta });
             return;
           }
-
           answer += delta;
-
           if (!streamStarted && !isToolBuf && !isPlanBuf) {
             if (looksLikeToolPayload(answer)) {
               isToolBuf = true;
               return;
             }
-
             if (
               looksLikeInternalPlan(answer)
               || looksLikeDeferral(answer)
@@ -756,15 +711,12 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
               isPlanBuf = true;
               return;
             }
-
             const trimmed = answer.trimStart();
             if (trimmed.length < BUFFER_CHECK) return;
-
             streamStarted = true;
             onEvent({ type: 'delta', content: answer });
             return;
           }
-
           if (streamStarted) {
             onEvent({ type: 'delta', content: delta });
           }
@@ -826,62 +778,16 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
       continue;
     }
 
-    if (parsed.type === 'final' && looksLikeInternalPlan(parsed.content || answer)) {
-      if (streamStarted) onEvent({ type: 'clear_stream' });
-      const recovery = await attemptAutomaticRecovery(
-        parsed.content || answer,
-        modelMessages,
-        toolCtx,
-        loopState,
-      );
-      if (recovery) {
-        modelMessages.push({ role: 'assistant', content: recovery.assistant });
-        for (const item of recovery.followUps) {
-          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
-        }
-        loopState.repeatCount = 0;
+    if (parsed.type === 'final') {
+      if (looksLikeDeferral(answer) || looksLikePendingEdit(answer) || looksLikeInternalPlan(answer)) {
+        if (streamStarted) onEvent({ type: 'clear_stream' });
+        modelMessages.push({ role: 'assistant', content: answer });
+        modelMessages.push({ 
+          role: 'user', 
+          content: "No pidas permiso ni expliques lo que vas a hacer. Ejecuta la herramienta (JSON) AHORA MISMO para aplicar el cambio o leer el siguiente archivo. No te detengas."
+        });
         continue;
       }
-      modelMessages.push({ role: 'assistant', content: answer });
-      modelMessages.push({
-        role: 'user',
-        content: [
-          'Tu ultima salida fue un plan interno.',
-          'No expliques tu plan al usuario.',
-          'Si necesitas leer o editar, usa la herramienta correspondiente.',
-          'Si ya terminaste, responde solo con el resultado final.',
-          'Continua la tarea ahora.',
-        ].join(' '),
-      });
-      continue;
-    }
-
-    if (parsed.type === 'final' && looksLikeDeferral(parsed.content || answer)) {
-      if (streamStarted) onEvent({ type: 'clear_stream' });
-      const recovery = await attemptAutomaticRecovery(
-        parsed.content || answer,
-        modelMessages,
-        toolCtx,
-        loopState,
-      );
-      if (recovery) {
-        modelMessages.push({ role: 'assistant', content: recovery.assistant });
-        for (const item of recovery.followUps) {
-          modelMessages.push({ role: 'user', content: `TOOL_RESULT [${item.tool}]:\n${item.content}` });
-        }
-        loopState.repeatCount = 0;
-        continue;
-      }
-      modelMessages.push({ role: 'assistant', content: answer });
-      modelMessages.push({
-        role: 'user',
-        content: [
-          'No pidas permiso ni delegues el siguiente paso.',
-          'Busca los archivos necesarios con las herramientas disponibles, aplica el cambio y solo despues responde con el resultado final.',
-          'Continua ahora.',
-        ].join(' '),
-      });
-      continue;
     }
 
     if (
@@ -991,9 +897,12 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
         loopState.repeatCount = 0;
         continue;
       }
+      
+      modelMessages.push({ role: 'user', content: "Estás atrapado en un bucle repitiendo lo mismo. Usa una herramienta distinta o detente de forma concluyente." });
+      continue;
     }
 
-    // ── Final response ──
+    // Respuesta final
     if (parsed.type === 'final') {
       if (concuerdo) {
         const synthResult = await runConcuerdo(parsed.content, modelKey, modelMessages, onEvent, isAborted);
@@ -1011,10 +920,11 @@ async function runWebAgent({ chatData, user, onEvent, isAborted }) {
       return;
     }
 
-    // ── Tool call ──
+    // Llamada a Herramienta
     if (parsed.type === 'tool') {
       if (streamStarted) onEvent({ type: 'clear_stream' });
       await applyToolCall(parsed, answer, toolCtx, loopState, modelMessages);
+
       if (
         parsed.tool === 'read_file'
         && parsed.args?.path
